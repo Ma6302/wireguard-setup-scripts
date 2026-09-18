@@ -1,0 +1,16 @@
+# Author: Ma6302 (https://github.com/Ma6302)
+[Unit]
+Description=WireGuard forward egress guard
+Documentation=file:/usr/local/sbin/wg-forward-guard.sh
+After=network-online.target wg-iptables.service
+Wants=network-online.target
+Requires=wg-iptables.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/wg-forward-guard.sh on
+ExecStop=/usr/local/sbin/wg-forward-guard.sh off
+
+[Install]
+WantedBy=multi-user.target
