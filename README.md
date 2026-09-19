@@ -73,9 +73,16 @@ cd wg-traffic-monitor && bash install.sh
 - 每晚 23:30 微信日报：当日总量 / 阈值使用率 / 各设备用量 / 本月累计
 - 当日累计达到阈值（默认 20 GB）立即告警，每天最多 1 次
 - 交互菜单可改阈值、日报时间、快照间隔、SendKey，支持卸载
-- **自动更新**：每天日报时比对 `wg-traffic-monitor/VERSION`，有新版自动下载、语法校验、
-  备份旧版后原子替换（校验失败则完全不动）；菜单 `12)` 可开关，`11)` 可手动检查
-- 更新源：GitHub raw 主通道 + jsdelivr CDN 兜底
+- **自动更新（从 Release 标签快照）**：每天日报后检查最新项目标签，读取**标签内
+  `wg-traffic-monitor/VERSION`** 与本地比较——版本变了才下载（raw + jsdelivr 双通道锁定同一标签）
+  → 校验 → 备份旧版 → 原子替换；任一步失败则完全不动。菜单 `12)` 开关、`11)` 手动检查
+- **单版本流发布（维护者）**：tag 指向整仓快照（wg.sh + wgmon + deploy.sh 都在里面），
+  **无需为未改动的组件重复上传文件**；组件是否升级由各自 `VERSION` 决定：
+  ```bash
+  git tag v1.3.0 && git push origin v1.3.0
+  gh release create v1.3.0 --title "v1.3.0" --notes "本次变更：..."
+  ```
+  只推 main 不打标签的提交**不会**被已部署服务器安装
 
 ⚠️ 部署生成的 `config.ini` 含 SendKey，已被 `.gitignore` 排除，请勿手动提交。
 

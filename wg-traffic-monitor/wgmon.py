@@ -48,11 +48,12 @@ DB_PATH = os.path.join(BASE_DIR, "wgmon.db")
 CRON_TAG = "wgmon.py"  # crontab 幂等标记
 
 # 版本号（与仓库 wg-traffic-monitor/VERSION 比较，决定是否自动更新）
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
-# 更新源：默认从 Release 标签下载（不可变快照，比 main 分支中间态安全），失败回退 main
+# 更新源：从项目 Release 标签（整仓快照）取，标签内 wg-traffic-monitor/VERSION 为准；
+# 识别 vX.Y.Z（推荐）与兼容 wgmon-vX.Y.Z 两种标签名；找不到标签时回退 main 分支
 DEFAULT_REPO_SLUG = "Ma6302/wireguard-setup-scripts"
-DEFAULT_TAG_PREFIX = "wgmon-v"
+TAG_RE = re.compile(r"^(?:wgmon-)?v(\d+(?:\.\d+)*)$")
 
 WG_DUMP_CMD = ["wg", "show", "all", "dump"]
 CLIENT_CONF_DIR = "/root"  # /root/<设备名>.conf
@@ -77,12 +78,11 @@ report_minute = 30
 # 可选手动映射（IP = 设备名）。留空则自动解析 /root/*.conf 文件名
 
 [update]
-# 自动更新：开启后每天日报时检查新版并自动安装（版本经仓库 Release 发布）
+# 自动更新：开启后每天日报时检查新版并自动安装
 auto_update = true
-# 更新通道：release=从 Release 标签下载（推荐，不可变快照）；main=从 main 分支下载
+# 更新通道：release=从项目 Release 标签（整仓快照）取，标签内 VERSION 为准；main=从 main 分支取
 channel = release
 repo_slug = Ma6302/wireguard-setup-scripts
-tag_prefix = wgmon-v
 """
 
 
@@ -106,7 +106,6 @@ def load_config():
         auto_update = cp.getboolean("update", "auto_update", fallback=True)
         channel = cp.get("update", "channel", fallback="release").strip().lower()
         repo_slug = cp.get("update", "repo_slug", fallback=DEFAULT_REPO_SLUG).strip()
-        tag_prefix = cp.get("update", "tag_prefix", fallback=DEFAULT_TAG_PREFIX).strip()
 
     return Cfg()
 
@@ -137,10 +136,9 @@ def save_config(cfg):
         "[update]",
         "# 自动更新：开启后每天日报时检查新版并自动安装",
         "auto_update = %s" % ("true" if cfg.auto_update else "false"),
-        "# release=从 Release 标签下载（推荐）；main=从 main 分支下载",
+        "# release=从项目 Release 标签（整仓快照）取；main=从 main 分支取",
         "channel = %s" % cfg.channel,
         "repo_slug = %s" % cfg.repo_slug,
-        "tag_prefix = %s" % cfg.tag_prefix,
     ]
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
@@ -620,8 +618,10 @@ def fetch_file(cfg, path, ref):
     raise RuntimeError("; ".join(errs))
 
 
-def latest_release(cfg):
-    """找最新的 wgmon Release 标签：先 Releases（草稿不计），再 Tags。返回 (版本, ref) 或 None"""
+def latest_release_ref(cfg):
+    """找最新的项目快照标签（整仓快照）：vX.Y.Z 或兼容的 wgmon-vX.Y.Z。
+    先看 Releases（草稿不计），再看 Tags。返回 tag 名或 None。
+    注意：标签名里的版本只用于挑"最新标签"，组件该不该更新以标签内 VERSION 文件为准。"""
     import json
     for kind in ("releases", "tags"):
         try:
@@ -634,34 +634,37 @@ def latest_release(cfg):
         best = None
         for item in data:
             name = item.get("tag_name") or item.get("name") or ""
-            if not name.startswith(cfg.tag_prefix):
+            m = TAG_RE.match(name)
+            if not m:
                 continue
-            v = name[len(cfg.tag_prefix):]
-            if best is None or _ver_tuple(v) > _ver_tuple(best[0]):
+            v = _ver_tuple(m.group(1))
+            if best is None or v > best[0]:
                 best = (v, name)
         if best:
-            return best
+            return best[1]
     return None
 
 
 def check_update(cfg, interactive=False):
-    """检查更新：默认从 Release 标签取（不可变快照），取不到再回退 main 分支。
+    """检查更新：默认从最新项目 Release 标签（整仓不可变快照）取，取不到再回退 main 分支。
+    是否需要更新以「标签内 wg-traffic-monitor/VERSION」与本地 VERSION 比较为准
+    （因此只有 wg.sh 改动的版本不会触发 wgmon 更新）。
     有新版则 下载 -> 校验（语法 + 版本号一致性）-> 备份 -> 原子替换；
     config.ini / wgmon.db / crontab 全部不动。返回 0=无更新 1=已更新 2=失败"""
-    remote, ref, src = None, "main", "main 分支"
+    ref, src = None, ""
     if cfg.channel == "release":
-        rel = latest_release(cfg)
-        if rel:
-            remote, ref = rel
-            src = "Release %s" % ref
+        ref = latest_release_ref(cfg)
+        if ref:
+            src = "Release 标签 %s" % ref
         elif interactive:
-            print("未找到 %s* 标签（Release），回退检查 main 分支" % cfg.tag_prefix)
-    if remote is None:
-        try:
-            remote = fetch_file(cfg, REPO_PREFIX + "/VERSION", ref).strip()
-        except Exception as e:
-            print("检查更新失败（网络或仓库不可达）: %s" % e)
-            return 2
+            print("未找到 Release 标签（vX.Y.Z / wgmon-vX.Y.Z），回退检查 main 分支")
+    if ref is None:
+        ref, src = "main", "main 分支"
+    try:
+        remote = fetch_file(cfg, REPO_PREFIX + "/VERSION", ref).strip()
+    except Exception as e:
+        print("检查更新失败（网络或仓库不可达）: %s" % e)
+        return 2
     if _ver_tuple(remote) <= _ver_tuple(VERSION):
         if interactive:
             print("已是最新版本 v%s（来源: %s）" % (VERSION, src))
@@ -894,7 +897,7 @@ def main():
         elif cmd == "version":
             print("wgmon v%s（更新通道: %s，来源: %s）" % (
                 VERSION, cfg.channel,
-                "Release 标签 %s*" % cfg.tag_prefix if cfg.channel == "release" else "main 分支"))
+                "Release 标签（vX.Y.Z）" if cfg.channel == "release" else "main 分支"))
         elif cmd == "menu":
             cmd_menu(cfg)
         else:

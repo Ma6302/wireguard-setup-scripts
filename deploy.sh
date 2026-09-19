@@ -10,7 +10,8 @@
 #   --dry-run        只下载到临时目录并校验，不修改服务器任何文件
 #   --sendkey=KEY    非交互指定 Server酱 SendKey（不填则安装 wgmon 时提示输入）
 #   --no-wg          跳过 wg.sh（WireGuard 已装好时用）
-#   --ref=REF        指定 git ref（分支/标签），默认 main；如 --ref=wgmon-v1.2.0
+#   --ref=REF        指定 git ref（分支/标签）。默认自动解析为最新的 vX.Y.Z Release 标签
+#                    （整仓不可变快照，即你发布过的验证版本）；加 --ref=main 可跟随分支最新提交
 #
 # 说明：本脚本只做「下载 → 校验 → 备份 → 放置」，不会替你修改隧道配置；
 #       WireGuard 的实际安装由 wg.sh 的交互菜单完成（需要你选端口、DNS、首个客户端名）。
@@ -18,7 +19,8 @@
 set -uo pipefail
 
 REPO=Ma6302/wireguard-setup-scripts
-REF=main
+REF=""
+REF_SRC=""
 WG_SH=/root/wg.sh
 WGMON_DIR=/opt/wgmon
 TS=$(date +%Y%m%d-%H%M%S)
@@ -31,7 +33,7 @@ for arg in "$@"; do
     --dry-run) DRY_RUN=1 ;;
     --no-wg)   SKIP_WG=1 ;;
     --sendkey=*) SENDKEY="${arg#--sendkey=}" ;;
-    --ref=*)     REF="${arg#--ref=}" ;;
+    --ref=*)     REF="${arg#--ref=}"; REF_SRC="命令行指定" ;;
     *) echo "未知参数: $arg"; exit 2 ;;
   esac
 done
@@ -43,6 +45,31 @@ die()  { echo -e "\n\033[31m✗ $*\033[0m"; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "请用 root 运行"
 command -v curl >/dev/null || die "未找到 curl（apt install -y curl）"
+
+resolve_latest_ref() {
+  # 与 wgmon 自更新同策略：先 Releases（草稿不计），再 Tags，
+  # 识别 vX.Y.Z（推荐）与兼容 wgmon-vX.Y.Z，按数字取最高（v1.10.0 > v1.9.9）
+  local kind body best
+  for kind in releases tags; do
+    body=$(curl -fsSL -m 15 "https://api.github.com/repos/$REPO/$kind?per_page=100" 2>/dev/null) || continue
+    best=$(printf '%s' "$body" \
+      | grep -oE '"(tag_name|name)": *"(wgmon-)?v[0-9]+(\.[0-9]+)*"' \
+      | grep -oE '(wgmon-)?v[0-9]+(\.[0-9]+)*' \
+      | awk '{ v=$0; sub(/^wgmon-/,"",v); sub(/^v/,"",v); print v" "$0 }' \
+      | sort -V -k1,1 | tail -1 | awk '{ print $2 }')
+    if [[ -n "$best" ]]; then printf '%s' "$best"; return 0; fi
+  done
+  return 1
+}
+
+if [[ -z "$REF" ]]; then
+  if REF=$(resolve_latest_ref) && [[ -n "$REF" ]]; then
+    REF_SRC="最新 Release 标签（不可变快照）"
+  else
+    REF=main
+    REF_SRC="main 分支（未找到 vX.Y.Z 标签或 API 不可达）"
+  fi
+fi
 
 fetch() {  # $1=仓库内相对路径  $2=输出文件（raw 主通道 + jsdelivr 兜底，锁定同一 ref）
   local rel="$1" out="$2"
@@ -57,7 +84,7 @@ fetch() {  # $1=仓库内相对路径  $2=输出文件（raw 主通道 + jsdeliv
   return 1
 }
 
-say "步骤 1/3  下载脚本（ref=$REF，GitHub raw 主通道，jsdelivr 兜底）"
+say "步骤 1/3  下载脚本（ref=$REF → $REF_SRC；raw 主通道，jsdelivr 兜底）"
 WORK=$(mktemp -d /tmp/wgdeploy.XXXXXX)
 fetch "wg.sh" "$WORK/wg.sh" || die "下载 wg.sh 失败（两路均不可达，请检查网络）"
 ok "wg.sh 下载完成（源: $(cat /tmp/.wg_fetch_src)）"

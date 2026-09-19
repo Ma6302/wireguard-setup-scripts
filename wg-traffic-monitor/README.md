@@ -60,11 +60,14 @@ wgmon selftest     # 自检 + 发测试消息
 `11` 检查并安装更新（GitHub）· `12` 自动更新开关 · `0` 退出
 
 ## 更新机制
-- **更新来源（v1.2.0 起）**：默认 `channel = release`——从 **Release 标签**（`wgmon-vX.Y.Z`）
-  下载，标签是不可变快照，比 main 分支的中间状态安全；找不到标签时自动回退 main 分支。
-  下载仍走 raw 主通道 + jsdelivr 兜底，且**两路都锁定同一个标签**。
-- **完整性校验**：下载后先比对「标签版本」与「文件内 `VERSION` 常量」是否一致，再 `py_compile`
-  校验语法；任何一步不过就放弃并保留当前版本（不留下 `.new` 残留）
+- **更新来源（v1.3.0 起）**：默认 `channel = release`——从**最新的项目 Release 标签**
+  （`vX.Y.Z`，整仓不可变快照；兼容旧的 `wgmon-vX.Y.Z`）取文件，标签是不可变快照，
+  比 main 分支的中间状态安全；找不到标签时自动回退 main 分支。
+  下载走 raw 主通道 + jsdelivr 兜底，**两路锁定同一个标签**。
+- **是否需要更新以组件自己的版本为准**：先读「标签内 `wg-traffic-monitor/VERSION`」与本地比较，
+  版本没变就不下载。因此**只改了 wg.sh 的版本不会让服务器白装一次 wgmon**。
+- **完整性校验**：`VERSION` 比对通过后，再校验下载文件内的 `VERSION` 常量与之一致，最后
+  `py_compile` 校验语法；任何一步不过就放弃并保留当前版本（不留下 `.new` 残留）
 - **自动**：`auto_update = true` 时，每天日报推送后检查一次；发现新版 → 校验 → 旧版备份
   `wgmon.py.bak-时间戳` → 原子替换 → 微信通知（含来源标签）
 - **手动**：菜单 `11)` 或 `wgmon check-update`；开关：菜单 `12)`；查看通道：`wgmon version`
@@ -78,14 +81,18 @@ wgmon uninstall                    # 交互确认：移除定时任务+快捷命
 对隧道零影响（本来就没改过任何隧道相关的东西）。
 
 ## 发布新版本（维护者）
-1. 修改 `wgmon.py`，同步提升脚本内 `VERSION` 常量与 `VERSION` 文件（两处必须一致）
+**一个版本流、一个标签就够了**：tag 指向整仓快照，`wg.sh` / `wgmon.py` / `deploy.sh` 都在同一棵树里，
+因此**不需要**为了"另一个组件没改"而重复上传文件或附件；组件是否需要更新由各自的 `VERSION` 决定。
+
+1. 改代码。若改的是 wgmon，**同步提升**脚本内 `VERSION` 常量与 `wg-traffic-monitor/VERSION`（两处必须一致）；
+   只改 wg.sh 则**不动** wgmon 的版本号（这样服务器检查后会发现组件版本没变，不会白装）
 2. `git add -A && git commit && git push`
-3. 打标签并发布 Release（**标签名必须是 `wgmon-vX.Y.Z` 格式**，否则不会被识别）：
+3. 打标签并发布 Release（推荐 `vX.Y.Z`；发布说明里注明本次改了哪个组件）：
    ```bash
-   git tag wgmon-v1.2.0 && git push origin wgmon-v1.2.0
-   gh release create wgmon-v1.2.0 --title "wgmon v1.2.0" --notes "变更说明"
+   git tag v1.3.0 && git push origin v1.3.0
+   gh release create v1.3.0 --title "v1.3.0" --notes "本次变更：wgmon 1.3.0（...）"
    ```
-4. 已部署的服务器会在**当天日报推送后自动升级**，或立刻在服务器执行 `wgmon check-update`
+4. 已部署服务器会在**当天日报后自动升级**（仅当它对应组件有新版本），或立刻 `wgmon check-update`
 5. 只推 main 不打标签 → 走 `channel = release` 的服务器**不会**升级（这正是"只发布已验证版本"的保险）
 
 ## 已知边界
