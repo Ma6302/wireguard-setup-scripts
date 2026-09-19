@@ -95,6 +95,47 @@ wgmon uninstall                    # 交互确认：移除定时任务+快捷命
 4. 已部署服务器会在**当天日报后自动升级**（仅当它对应组件有新版本），或立刻 `wgmon check-update`
 5. 只推 main 不打标签 → 走 `channel = release` 的服务器**不会**升级（这正是"只发布已验证版本"的保险）
 
+## 发版检查清单（维护者）
+发布前后各跑一遍。**"命令没报错"不等于成功，必须有回读证据**——本项目实测过
+`gh release create --attach` 静默报 usage 错误、`gh repo create` 参数错却仍返回 0 的情况。
+
+### 发版前
+1. **本地与服务器脚本一致**：`md5sum wg-traffic-monitor/wgmon.py` 与服务器 `/opt/wgmon/wgmon.py` 相同
+2. **工作区干净**：`git status --short` 无输出；`git log --oneline -1` 就是本次发版内容
+3. **两处版本号同时提升且一致**（仅当改了 wgmon）：`wgmon.py` 内 `VERSION` 常量 + `wg-traffic-monitor/VERSION`
+4. **只改 wg.sh 时不动 wgmon 版本号**——否则已部署服务器会白装一次
+5. **敏感信息扫描**：`grep -rn "SCT" wg-traffic-monitor/`（`config.ini` 含 SendKey，绝不能入库）
+
+### 发版后回读验证（不可跳过）
+```bash
+TAG=v1.4.0
+REPO=Ma6302/wireguard-setup-scripts
+
+# 1) commit SHA：本地 == 远端
+[ "$(git rev-parse HEAD)" = "$(gh api repos/$REPO/commits/main --jq .sha)" ] && echo SHA_OK
+
+# 2) tag 指向的就是这个 commit
+gh api repos/$REPO/git/ref/tags/$TAG --jq .object.sha
+
+# 3) 标签内文件与本地逐字节一致（自动更新取的就是这里）
+curl -fsSL "https://raw.githubusercontent.com/$REPO/$TAG/wg-traffic-monitor/wgmon.py" | md5sum
+md5sum wg-traffic-monitor/wgmon.py     # 两个 md5 必须相同
+
+# 4) 传了附件时，state 必须全部是 uploaded（不是 "starter"/"uploading"）
+gh release view $TAG --repo $REPO --json assets \
+  --jq '.assets[] | "\(.name) \(.size) \(.state)"'
+```
+
+> **gh 在 Windows 上的两个坑**：`--notes-file` 要用仓库内相对路径（不认 `/tmp`）；
+> 附件用**位置参数**传（`gh release create <tag> <file>`），gh 2.99 的 `--attach` 会报 usage 错误。
+> 附件上传慢时给足 timeout（100 MB 量级 ≥10 分钟）。
+
+### 服务器侧验收
+```bash
+wgmon check-update     # 期望："已是最新版本 vX.Y.Z（来源: Release 标签 vX.Y.Z）"
+```
+或等当天日报（北京时间 23:35）后自动检查——结果只写 `/opt/wgmon/wgmon.log`，不成功也不影响监控。
+
 ## 已知边界
 - 服务器重启期间的流量缺口不可恢复（≤1 个快照间隔）
 - Server酱免费版每天 5 条：日报 1 条，告警/更新通知按需各 1 条，余量充足
