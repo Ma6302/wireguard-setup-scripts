@@ -48,11 +48,11 @@ DB_PATH = os.path.join(BASE_DIR, "wgmon.db")
 CRON_TAG = "wgmon.py"  # crontab 幂等标记
 
 # 版本号（与仓库 wg-traffic-monitor/VERSION 比较，决定是否自动更新）
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
-# 更新源：GitHub raw 为主，jsdelivr 镜像兜底（阿里云北京两个通道均实测可达）
-DEFAULT_REPO_BASE = "https://raw.githubusercontent.com/Ma6302/wireguard-setup-scripts/main"
-DEFAULT_MIRROR_BASE = "https://cdn.jsdelivr.net/gh/Ma6302/wireguard-setup-scripts@main"
+# 更新源：默认从 Release 标签下载（不可变快照，比 main 分支中间态安全），失败回退 main
+DEFAULT_REPO_SLUG = "Ma6302/wireguard-setup-scripts"
+DEFAULT_TAG_PREFIX = "wgmon-v"
 
 WG_DUMP_CMD = ["wg", "show", "all", "dump"]
 CLIENT_CONF_DIR = "/root"  # /root/<设备名>.conf
@@ -77,10 +77,12 @@ report_minute = 30
 # 可选手动映射（IP = 设备名）。留空则自动解析 /root/*.conf 文件名
 
 [update]
-# 自动更新：开启后每天日报时检查 GitHub 上的新版并自动安装（仅你的仓库，版本经你验证）
+# 自动更新：开启后每天日报时检查新版并自动安装（版本经仓库 Release 发布）
 auto_update = true
-repo_base = https://raw.githubusercontent.com/Ma6302/wireguard-setup-scripts/main
-mirror_base = https://cdn.jsdelivr.net/gh/Ma6302/wireguard-setup-scripts@main
+# 更新通道：release=从 Release 标签下载（推荐，不可变快照）；main=从 main 分支下载
+channel = release
+repo_slug = Ma6302/wireguard-setup-scripts
+tag_prefix = wgmon-v
 """
 
 
@@ -102,8 +104,9 @@ def load_config():
         report_minute = cp.getint("report", "report_minute", fallback=30)
         peer_overrides = dict(cp.items("peers")) if cp.has_section("peers") else {}
         auto_update = cp.getboolean("update", "auto_update", fallback=True)
-        repo_base = cp.get("update", "repo_base", fallback=DEFAULT_REPO_BASE).strip()
-        mirror_base = cp.get("update", "mirror_base", fallback=DEFAULT_MIRROR_BASE).strip()
+        channel = cp.get("update", "channel", fallback="release").strip().lower()
+        repo_slug = cp.get("update", "repo_slug", fallback=DEFAULT_REPO_SLUG).strip()
+        tag_prefix = cp.get("update", "tag_prefix", fallback=DEFAULT_TAG_PREFIX).strip()
 
     return Cfg()
 
@@ -132,10 +135,12 @@ def save_config(cfg):
     lines += [
         "",
         "[update]",
-        "# 自动更新：开启后每天日报时检查 GitHub 上的新版并自动安装",
+        "# 自动更新：开启后每天日报时检查新版并自动安装",
         "auto_update = %s" % ("true" if cfg.auto_update else "false"),
-        "repo_base = %s" % cfg.repo_base,
-        "mirror_base = %s" % cfg.mirror_base,
+        "# release=从 Release 标签下载（推荐）；main=从 main 分支下载",
+        "channel = %s" % cfg.channel,
+        "repo_slug = %s" % cfg.repo_slug,
+        "tag_prefix = %s" % cfg.tag_prefix,
     ]
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
@@ -596,37 +601,74 @@ def fetch_text(url, timeout=15):
         return r.read().decode("utf-8", "replace")
 
 
-def fetch_first(cfg, rel_path):
-    """依次尝试 GitHub raw 与 jsdelivr 镜像，返回内容（阿里云北京两个通道均实测可达）"""
+def _raw_url(slug, ref, path):
+    return "https://raw.githubusercontent.com/%s/%s/%s" % (slug, ref, path)
+
+
+def _cdn_url(slug, ref, path):
+    return "https://cdn.jsdelivr.net/gh/%s@%s/%s" % (slug, ref, path)
+
+
+def fetch_file(cfg, path, ref):
+    """下载仓库内某文件：raw 主通道 + jsdelivr 兜底，两路都锁定同一个 ref（同一版本）"""
     errs = []
-    for base in (cfg.repo_base, cfg.mirror_base):
-        if not base:
-            continue
+    for url in (_raw_url(cfg.repo_slug, ref, path), _cdn_url(cfg.repo_slug, ref, path)):
         try:
-            return fetch_text(base.rstrip("/") + "/" + rel_path.lstrip("/"))
+            return fetch_text(url)
         except Exception as e:
-            errs.append("%s -> %s" % (base, e))
-    raise RuntimeError("; ".join(errs) if errs else "未配置更新源")
+            errs.append("%s: %s" % (url.split("/")[2], e))
+    raise RuntimeError("; ".join(errs))
+
+
+def latest_release(cfg):
+    """找最新的 wgmon Release 标签：先 Releases（草稿不计），再 Tags。返回 (版本, ref) 或 None"""
+    import json
+    for kind in ("releases", "tags"):
+        try:
+            data = json.loads(fetch_text(
+                "https://api.github.com/repos/%s/%s?per_page=100" % (cfg.repo_slug, kind)))
+        except Exception:
+            continue
+        if not isinstance(data, list):
+            continue
+        best = None
+        for item in data:
+            name = item.get("tag_name") or item.get("name") or ""
+            if not name.startswith(cfg.tag_prefix):
+                continue
+            v = name[len(cfg.tag_prefix):]
+            if best is None or _ver_tuple(v) > _ver_tuple(best[0]):
+                best = (v, name)
+        if best:
+            return best
+    return None
 
 
 def check_update(cfg, interactive=False):
-    """检查仓库版本号，有新版则下载->校验->备份->原子替换（配置/数据/cron 不动）。
-    返回 0=无更新 1=已更新 2=失败"""
-    try:
-        remote = fetch_first(cfg, REPO_PREFIX + "/VERSION").strip()
-    except Exception as e:
-        if interactive:
+    """检查更新：默认从 Release 标签取（不可变快照），取不到再回退 main 分支。
+    有新版则 下载 -> 校验（语法 + 版本号一致性）-> 备份 -> 原子替换；
+    config.ini / wgmon.db / crontab 全部不动。返回 0=无更新 1=已更新 2=失败"""
+    remote, ref, src = None, "main", "main 分支"
+    if cfg.channel == "release":
+        rel = latest_release(cfg)
+        if rel:
+            remote, ref = rel
+            src = "Release %s" % ref
+        elif interactive:
+            print("未找到 %s* 标签（Release），回退检查 main 分支" % cfg.tag_prefix)
+    if remote is None:
+        try:
+            remote = fetch_file(cfg, REPO_PREFIX + "/VERSION", ref).strip()
+        except Exception as e:
             print("检查更新失败（网络或仓库不可达）: %s" % e)
-        else:
-            print("update check failed: %s" % e)
-        return 2
+            return 2
     if _ver_tuple(remote) <= _ver_tuple(VERSION):
         if interactive:
-            print("已是最新版本 v%s（远端 v%s）" % (VERSION, remote))
+            print("已是最新版本 v%s（来源: %s）" % (VERSION, src))
         else:
-            print("update check: up to date (v%s)" % VERSION)
+            print("update check: up to date (v%s, %s)" % (VERSION, src))
         return 0
-    print("发现新版本：v%s → v%s" % (VERSION, remote))
+    print("发现新版本：v%s → v%s（来源: %s）" % (VERSION, remote, src))
     if interactive:
         try:
             if input("立即更新? (Y/n): ").strip().lower() == "n":
@@ -636,9 +678,14 @@ def check_update(cfg, interactive=False):
             print("\n已取消。")
             return 0
     try:
-        code = fetch_first(cfg, REPO_PREFIX + "/wgmon.py")
+        code = fetch_file(cfg, REPO_PREFIX + "/wgmon.py", ref)
     except Exception as e:
         print("下载失败: %s" % e)
+        return 2
+    m = re.search(r'^VERSION = "([\d.]+)"', code, re.M)
+    if not m or _ver_tuple(m.group(1)) != _ver_tuple(remote):
+        print("下载内容与声明的版本不符（应为 v%s，文件内为 %s），已放弃更新"
+              % (remote, m.group(1) if m else "未找到版本号"))
         return 2
     new_py = os.path.join(BASE_DIR, "wgmon.py.new")
     with open(new_py, "w", encoding="utf-8", newline="\n") as f:
@@ -653,8 +700,8 @@ def check_update(cfg, interactive=False):
     bak = _backup_and_swap(new_py, os.path.join(BASE_DIR, "wgmon.py"))
     print("已更新到 v%s%s。新代码自下次运行生效。" % (remote, "（备份: %s）" % bak if bak else ""))
     notify(cfg, "wgmon 已自动更新 v%s → v%s" % (VERSION, remote),
-           "新版 v%s 已自动安装完成，配置与流量数据不受影响。\n\n旧版备份：%s\n时间：%s（北京时间）"
-           % (remote, bak or "无", now_bj(cfg).strftime("%Y-%m-%d %H:%M")))
+           "新版 v%s 已自动安装完成（来源: %s），配置与流量数据不受影响。\n\n旧版备份：%s\n时间：%s（北京时间）"
+           % (remote, src, bak or "无", now_bj(cfg).strftime("%Y-%m-%d %H:%M")))
     return 1
 
 
@@ -744,7 +791,8 @@ def cmd_menu(cfg):
         print("8) 重装定时任务")
         print("9) 卸载 wgmon（移除定时任务/快捷命令，可选删数据）")
         print("10) 更新 wgmon / wg.sh（上传 .new 文件后执行，保留配置）")
-        print("11) 检查并安装更新（GitHub，当前 v%s）" % VERSION)
+        print("11) 检查并安装更新（来源: %s，当前 v%s）" % (
+            "Release 标签" if cfg.channel == "release" else "main 分支", VERSION))
         print("12) 自动更新（每天日报时自动检查安装，当前 %s）" % ("开" if cfg.auto_update else "关"))
         print("0) 退出")
         choice = input("请选择: ").strip()
@@ -844,7 +892,9 @@ def main():
         elif cmd == "check-update":
             sys.exit(check_update(cfg, interactive=True))
         elif cmd == "version":
-            print("wgmon v%s" % VERSION)
+            print("wgmon v%s（更新通道: %s，来源: %s）" % (
+                VERSION, cfg.channel,
+                "Release 标签 %s*" % cfg.tag_prefix if cfg.channel == "release" else "main 分支"))
         elif cmd == "menu":
             cmd_menu(cfg)
         else:

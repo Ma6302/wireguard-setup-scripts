@@ -60,13 +60,15 @@ wgmon selftest     # 自检 + 发测试消息
 `11` 检查并安装更新（GitHub）· `12` 自动更新开关 · `0` 退出
 
 ## 更新机制
-- **自动**：`auto_update = true` 时，每天日报推送后检查 `VERSION`，发现新版 →
-  下载 → `py_compile` 校验 → 旧版备份 `wgmon.py.bak-时间戳` → 原子替换 → 微信通知。
-  校验失败或网络不通则**完全不动**当前版本（只写日志）
-- **手动**：菜单 `11)` 或 `wgmon check-update`
-- **离线**：把新版上传为 `/opt/wgmon/wgmon.py.new`，执行 `wgmon update`（支持 wg.sh 的 `/root/wg.sh.new`）
+- **更新来源（v1.2.0 起）**：默认 `channel = release`——从 **Release 标签**（`wgmon-vX.Y.Z`）
+  下载，标签是不可变快照，比 main 分支的中间状态安全；找不到标签时自动回退 main 分支。
+  下载仍走 raw 主通道 + jsdelivr 兜底，且**两路都锁定同一个标签**。
+- **完整性校验**：下载后先比对「标签版本」与「文件内 `VERSION` 常量」是否一致，再 `py_compile`
+  校验语法；任何一步不过就放弃并保留当前版本（不留下 `.new` 残留）
+- **自动**：`auto_update = true` 时，每天日报推送后检查一次；发现新版 → 校验 → 旧版备份
+  `wgmon.py.bak-时间戳` → 原子替换 → 微信通知（含来源标签）
+- **手动**：菜单 `11)` 或 `wgmon check-update`；开关：菜单 `12)`；查看通道：`wgmon version`
 - 更新只替换脚本文件；`config.ini` / `wgmon.db` / crontab / wg0.conf 全部不受影响
-- 更新源：GitHub raw 为主，jsdelivr CDN 自动兜底
 
 ## 卸载
 菜单 `9)`，或：
@@ -74,6 +76,17 @@ wgmon selftest     # 自检 + 发测试消息
 wgmon uninstall                    # 交互确认：移除定时任务+快捷命令，可选删数据
 ```
 对隧道零影响（本来就没改过任何隧道相关的东西）。
+
+## 发布新版本（维护者）
+1. 修改 `wgmon.py`，同步提升脚本内 `VERSION` 常量与 `VERSION` 文件（两处必须一致）
+2. `git add -A && git commit && git push`
+3. 打标签并发布 Release（**标签名必须是 `wgmon-vX.Y.Z` 格式**，否则不会被识别）：
+   ```bash
+   git tag wgmon-v1.2.0 && git push origin wgmon-v1.2.0
+   gh release create wgmon-v1.2.0 --title "wgmon v1.2.0" --notes "变更说明"
+   ```
+4. 已部署的服务器会在**当天日报推送后自动升级**，或立刻在服务器执行 `wgmon check-update`
+5. 只推 main 不打标签 → 走 `channel = release` 的服务器**不会**升级（这正是"只发布已验证版本"的保险）
 
 ## 已知边界
 - 服务器重启期间的流量缺口不可恢复（≤1 个快照间隔）

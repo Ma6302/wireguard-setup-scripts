@@ -10,16 +10,15 @@
 #   --dry-run        只下载到临时目录并校验，不修改服务器任何文件
 #   --sendkey=KEY    非交互指定 Server酱 SendKey（不填则安装 wgmon 时提示输入）
 #   --no-wg          跳过 wg.sh（WireGuard 已装好时用）
+#   --ref=REF        指定 git ref（分支/标签），默认 main；如 --ref=wgmon-v1.2.0
 #
 # 说明：本脚本只做「下载 → 校验 → 备份 → 放置」，不会替你修改隧道配置；
 #       WireGuard 的实际安装由 wg.sh 的交互菜单完成（需要你选端口、DNS、首个客户端名）。
 # ============================================================================
 set -uo pipefail
 
-BASES=(
-  "https://raw.githubusercontent.com/Ma6302/wireguard-setup-scripts/main"
-  "https://cdn.jsdelivr.net/gh/Ma6302/wireguard-setup-scripts@main"
-)
+REPO=Ma6302/wireguard-setup-scripts
+REF=main
 WG_SH=/root/wg.sh
 WGMON_DIR=/opt/wgmon
 TS=$(date +%Y%m%d-%H%M%S)
@@ -32,6 +31,7 @@ for arg in "$@"; do
     --dry-run) DRY_RUN=1 ;;
     --no-wg)   SKIP_WG=1 ;;
     --sendkey=*) SENDKEY="${arg#--sendkey=}" ;;
+    --ref=*)     REF="${arg#--ref=}" ;;
     *) echo "未知参数: $arg"; exit 2 ;;
   esac
 done
@@ -44,18 +44,20 @@ die()  { echo -e "\n\033[31m✗ $*\033[0m"; exit 1; }
 [[ $EUID -eq 0 ]] || die "请用 root 运行"
 command -v curl >/dev/null || die "未找到 curl（apt install -y curl）"
 
-fetch() {  # $1=仓库内相对路径  $2=输出文件
-  local rel="$1" out="$2" base
-  for base in "${BASES[@]}"; do
-    if curl -fsSL -m 25 "$base/$rel" -o "$out"; then
-      echo "$base" >/tmp/.wg_fetch_src
-      return 0
-    fi
-  done
+fetch() {  # $1=仓库内相对路径  $2=输出文件（raw 主通道 + jsdelivr 兜底，锁定同一 ref）
+  local rel="$1" out="$2"
+  if curl -fsSL -m 25 "https://raw.githubusercontent.com/$REPO/$REF/$rel" -o "$out"; then
+    echo "https://raw.githubusercontent.com/$REPO/$REF" >/tmp/.wg_fetch_src
+    return 0
+  fi
+  if curl -fsSL -m 25 "https://cdn.jsdelivr.net/gh/$REPO@$REF/$rel" -o "$out"; then
+    echo "https://cdn.jsdelivr.net/gh/$REPO@$REF" >/tmp/.wg_fetch_src
+    return 0
+  fi
   return 1
 }
 
-say "步骤 1/3  下载脚本（GitHub raw 主通道，jsdelivr 兜底）"
+say "步骤 1/3  下载脚本（ref=$REF，GitHub raw 主通道，jsdelivr 兜底）"
 WORK=$(mktemp -d /tmp/wgdeploy.XXXXXX)
 fetch "wg.sh" "$WORK/wg.sh" || die "下载 wg.sh 失败（两路均不可达，请检查网络）"
 ok "wg.sh 下载完成（源: $(cat /tmp/.wg_fetch_src)）"
