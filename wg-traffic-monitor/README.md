@@ -101,8 +101,10 @@ wgmon uninstall                    # 交互确认：移除定时任务+快捷命
 
 ### 上传通道不通怎么办（本机代理只放行 `api.github.com`）
 
+> **先直接试 `git push`** —— 实测该通道是**间歇性**的（同一天里时通时不通），通了就不必绕行。
+
 若 `git push` 报 `CONNECT tunnel failed, response 502`、`Failed to connect to github.com port 443`
-或长时间挂住，说明 git-over-HTTPS 通道不可用。**两条绕行路线**：
+或长时间挂住，说明 git-over-HTTPS 通道此刻不可用。**两条绕行路线**：
 
 **路线 A（推荐，最省事）**：开着 Clash Verge 再推 —— git **不读** Windows 系统代理，必须显式指定：
 ```bash
