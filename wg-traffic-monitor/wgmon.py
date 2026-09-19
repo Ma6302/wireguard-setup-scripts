@@ -9,7 +9,9 @@ wgmon —— WireGuard 流量监控 + 微信日报（零成本方案）
   3. 每日固定时间推送流量日报到微信（Server酱·「方糖」服务号，免费）
   4. 自动更新：每天日报时比对 GitHub，**wgmon 与 wg.sh 两个组件各自检查**，
      谁有新版本就更新谁，并通知"更新了哪个"（可在菜单/配置开关）
-  5. 交互菜单：查看用量 / 立即推送 / 修改阈值 / 修改推送时间 / 修改 SendKey / 卸载 / 更新
+  5. 交互菜单（v1.4.1 起二级化，与 wg.sh 同级风格）：
+     主菜单 = 查看用量 / 推送日报 / 测试消息 / **参数设置**（阈值·日报时间·快照间隔）/
+     SendKey / 重装定时任务 / **更新管理**（手动更新·检查更新·自动更新开关）/ 卸载 / 退出
 
 子命令：
   snapshot     采集一次快照并检查阈值（cron 用）
@@ -50,7 +52,7 @@ DB_PATH = os.path.join(BASE_DIR, "wgmon.db")
 CRON_TAG = "wgmon.py"  # crontab 幂等标记
 
 # 版本号（与仓库 wg-traffic-monitor/VERSION 比较，决定是否自动更新）
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 
 # 更新源：从项目 Release 标签（整仓快照）取，标签内 wg-traffic-monitor/VERSION 为准；
 # 识别 vX.Y.Z（推荐）与兼容 wgmon-vX.Y.Z 两种标签名；找不到标签时回退 main 分支
@@ -974,27 +976,187 @@ def press_enter_to_menu():
         pass
 
 
+def press_enter_to_submenu(title):
+    """二级菜单里的暂停：回车返回上一层（提示语与主菜单区分开）"""
+    try:
+        input("\n按回车返回%s..." % title)
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
+def _rev(prompt):
+    """读一行输入并去掉首尾空白。EOF（Ctrl+D / stdin 关闭）或 Ctrl+C 返回 None，
+    由调用方当作"取消"处理 —— 避免在管道/非交互场景下抛异常退出。"""
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+
+# ---------------------------------------------------------------- 各项设置操作
+# （原先内联在主菜单 case 里；菜单二级化后主菜单与二级菜单共用这几个函数）
+
+def set_threshold(cfg):
+    """菜单：修改当日告警阈值"""
+    v = _rev("新阈值 (GB，0=禁用): ")
+    if v is None:
+        print("已取消。")
+        return
+    try:
+        f = float(v)
+        if f < 0:
+            raise ValueError
+    except ValueError:
+        print("输入无效。")
+        return
+    cfg.threshold_gb = f
+    save_config(cfg)
+    print("已保存。")
+
+
+def set_report_time(cfg):
+    """菜单：修改日报推送时间（北京时间）—— 改完自动重装定时任务"""
+    h = _rev("小时 (0-23): ")
+    if h is None:
+        print("已取消。")
+        return
+    m = _rev("分钟 (0-59): ")
+    if m is None:
+        print("已取消。")
+        return
+    try:
+        h, m = int(h), int(m)
+        if not (0 <= h <= 23 and 0 <= m <= 59):
+            raise ValueError
+    except ValueError:
+        print("输入无效。")
+        return
+    cfg.report_hour, cfg.report_minute = h, m
+    save_config(cfg)
+    install_cron(cfg)
+
+
+def set_interval(cfg):
+    """菜单：修改快照间隔 —— 改完自动重装定时任务"""
+    v = _rev("新快照间隔（分钟，建议 5/10/15/20/30/60）: ")
+    if v is None:
+        print("已取消。")
+        return
+    try:
+        n = int(v)
+        if n < 1 or n > 1440:
+            raise ValueError
+    except ValueError:
+        print("输入无效。")
+        return
+    cfg.snapshot_interval_min = n
+    save_config(cfg)
+    install_cron(cfg)
+
+
+def set_sendkey(cfg):
+    """菜单：修改 Server酱 SendKey"""
+    k = _rev("新 SendKey (SCT 开头): ")
+    if k is None:
+        print("已取消。")
+        return
+    if k.startswith("SCT") and len(k) > 10:
+        cfg.sendkey = k
+        save_config(cfg)
+        print("已保存。可用菜单 3 验证。")
+    else:
+        print("SendKey 格式不像，未保存。")
+
+
+def toggle_auto_update(cfg):
+    """菜单：自动更新开关"""
+    cfg.auto_update = not cfg.auto_update
+    save_config(cfg)
+    print("自动更新已%s（%s）。" % (
+        "开启" if cfg.auto_update else "关闭",
+        "每天日报时自动检查 GitHub 并按组件安装新版" if cfg.auto_update else "不再自动检查"))
+
+
+def menu_settings(cfg):
+    """二级菜单：参数设置（原主菜单 4/5/6 三项合并）"""
+    while True:
+        print()
+        print("-------- 参数设置 --------")
+        print("   当前：阈值 %g GB ｜ 日报 %02d:%02d ｜ 快照间隔 %d 分钟%s" % (
+            cfg.threshold_gb, cfg.report_hour, cfg.report_minute, cfg.snapshot_interval_min,
+            "（阈值告警已禁用）" if cfg.threshold_gb <= 0 else ""))
+        print("1) 修改当日告警阈值（当前 %g GB，0=禁用）" % cfg.threshold_gb)
+        print("2) 修改日报推送时间（当前北京时间 %02d:%02d）" % (cfg.report_hour, cfg.report_minute))
+        print("3) 修改快照间隔（当前 %d 分钟）" % cfg.snapshot_interval_min)
+        print("4) 返回上一级")
+        c = _rev("请选择: ")
+        if c is None:
+            print("已退出。")
+            return
+        if c == "4":
+            return
+        if c == "1":
+            set_threshold(cfg)
+        elif c == "2":
+            set_report_time(cfg)
+        elif c == "3":
+            set_interval(cfg)
+        else:
+            print("无效选项，请重新选择。")
+            continue
+        press_enter_to_submenu("参数设置菜单")
+
+
+def menu_update(cfg):
+    """二级菜单：更新管理（原主菜单 10/11/12 三项合并）"""
+    while True:
+        sh_ver = local_wgsh_version(cfg)
+        print()
+        print("-------- 更新管理 --------")
+        print("   当前：wgmon v%s ｜ wg.sh %s ｜ 自动更新 %s（来源: %s）" % (
+            VERSION, ("v" + sh_ver) if sh_ver else "未知",
+            "开" if cfg.auto_update else "关",
+            "Release 标签" if cfg.channel == "release" else "main 分支"))
+        print("1) 手动更新（上传 wgmon.py.new / wg.sh.new 后执行，保留配置）")
+        print("2) 检查并安装更新（从 GitHub 下载，两个组件各自判断）")
+        print("3) 自动更新开关（当前 %s）" % ("开" if cfg.auto_update else "关"))
+        print("4) 返回上一级")
+        c = _rev("请选择: ")
+        if c is None:
+            print("已退出。")
+            return
+        if c == "4":
+            return
+        if c == "1":
+            cmd_update(cfg)
+        elif c == "2":
+            check_update(cfg, interactive=True)
+        elif c == "3":
+            toggle_auto_update(cfg)
+        else:
+            print("无效选项，请重新选择。")
+            continue
+        press_enter_to_submenu("更新管理菜单")
+
+
 def cmd_menu(cfg):
+    """主菜单。v1.4.1 起二级化：原 4/5/6 收进「参数设置」，10/11/12 收进「更新管理」"""
     while True:
         print()
         print("======== wgmon 流量监控 ========")
         print("1) 查看当日/本月用量")
         print("2) 立即推送日报到微信")
         print("3) 发送测试消息")
-        print("4) 修改当日告警阈值（当前 %g GB，0=禁用）" % cfg.threshold_gb)
-        print("5) 修改日报推送时间（当前北京时间 %02d:%02d）" % (cfg.report_hour, cfg.report_minute))
-        print("6) 修改快照间隔（当前 %d 分钟）" % cfg.snapshot_interval_min)
-        print("7) 修改 Server酱 SendKey")
-        print("8) 重装定时任务")
-        print("9) 卸载 wgmon（移除定时任务/快捷命令，可选删数据）")
-        print("10) 更新 wgmon / wg.sh（上传 .new 文件后执行，保留配置）")
-        print("11) 检查并安装更新（wgmon v%s / wg.sh %s，来源: %s）" % (
-            VERSION,
-            ("v" + local_wgsh_version(cfg)) if local_wgsh_version(cfg) else "未知",
-            "Release 标签" if cfg.channel == "release" else "main 分支"))
-        print("12) 自动更新（每天日报时自动检查安装，当前 %s）" % ("开" if cfg.auto_update else "关"))
+        print("4) 参数设置（阈值 / 日报时间 / 快照间隔）")
+        print("5) 修改 Server酱 SendKey")
+        print("6) 重装定时任务")
+        print("7) 更新管理（手动更新 / 检查更新 / 自动更新开关）")
+        print("8) 卸载 wgmon（移除定时任务/快捷命令，可选删数据）")
         print("0) 退出")
-        choice = input("请选择: ").strip()
+        choice = _rev("请选择: ")
+        if choice is None:
+            print("已退出。")
+            break
         if choice == "0":
             break
         if choice == "1":
@@ -1005,63 +1167,23 @@ def cmd_menu(cfg):
             ok, msg = notify(cfg, "✅ wgmon 测试消息", "这是一条手动测试消息。")
             print("发送: %s%s" % ("成功" if ok else "失败", "" if ok else " -> " + msg))
         elif choice == "4":
-            try:
-                v = float(input("新阈值 (GB，0=禁用): ").strip())
-                if v < 0:
-                    raise ValueError
-                cfg.threshold_gb = v
-                save_config(cfg)
-                print("已保存。")
-            except ValueError:
-                print("输入无效。")
+            # 二级菜单：返回后直接重印主菜单，不再多按一次回车
+            menu_settings(cfg)
+            continue
         elif choice == "5":
-            try:
-                h = int(input("小时 (0-23): ").strip())
-                m = int(input("分钟 (0-59): ").strip())
-                if not (0 <= h <= 23 and 0 <= m <= 59):
-                    raise ValueError
-                cfg.report_hour, cfg.report_minute = h, m
-                save_config(cfg)
-                install_cron(cfg)
-            except ValueError:
-                print("输入无效。")
+            set_sendkey(cfg)
         elif choice == "6":
-            try:
-                v = int(input("新快照间隔（分钟，建议 5/10/15/30/60）: ").strip())
-                if v < 1 or v > 1440:
-                    raise ValueError
-                cfg.snapshot_interval_min = v
-                save_config(cfg)
-                install_cron(cfg)
-            except ValueError:
-                print("输入无效。")
-        elif choice == "7":
-            k = input("新 SendKey (SCT 开头): ").strip()
-            if k.startswith("SCT") and len(k) > 10:
-                cfg.sendkey = k
-                save_config(cfg)
-                print("已保存。可用菜单 3 验证。")
-            else:
-                print("SendKey 格式不像，未保存。")
-        elif choice == "8":
             try:
                 install_cron(cfg)
             except Exception as e:
                 print("失败: %s" % e)
-        elif choice == "9":
+        elif choice == "7":
+            menu_update(cfg)
+            continue
+        elif choice == "8":
             if uninstall(cfg):
                 print("wgmon 已完全卸载。")
                 break
-        elif choice == "10":
-            cmd_update(cfg)
-        elif choice == "11":
-            check_update(cfg, interactive=True)
-        elif choice == "12":
-            cfg.auto_update = not cfg.auto_update
-            save_config(cfg)
-            print("自动更新已%s（%s）。" % (
-                "开启" if cfg.auto_update else "关闭",
-                "每天日报时自动检查 GitHub 并安装新版" if cfg.auto_update else "不再自动检查"))
         else:
             print("无效选项，请重新选择。")
             continue
