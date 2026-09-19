@@ -18,6 +18,7 @@ WireGuard 组网服务器一键安装 / 管理脚本（阿里云 Ubuntu 实测�
 | `wg.sh` | 主脚本：WireGuard 服务端一键安装 + 管理菜单（添加/删除客户端、QR 码、peer 名称显示） |
 | `harden-ssh.sh` | SSH 加固（root 仅密钥登录、关闭密码登录；幂等、可回滚，`--check` 只读查看） |
 | `wg-forward-guard.sh` + `.service` | WireGuard 出方向防护：抑制客户端异常扫描/P2P 行为，防止云平台误判「对外攻击」触发全端口阻断 |
+| `wg-traffic-monitor/` | **流量监控 + 微信日报**（wgmon）：增量记账统计各设备/当日/当月流量，阈值告警，定时日报，支持 GitHub 自动更新 |
 | `CHANGELOG.md` | 完整迭代日志（A→C6 共 9 个版本，每项修复的原理、部署与验证记录） |
 | `docs/versions/` | 全部历史版本快照（文件名内嵌行数与 md5 前 8 位） |
 
@@ -33,7 +34,23 @@ bash harden-ssh.sh
 
 # 出方向防护
 bash wg-forward-guard.sh on|off|status
+
+# 流量监控 + 微信日报（详见 wg-traffic-monitor/README.md）
+cd wg-traffic-monitor && bash install.sh
 ```
+
+## 流量监控（wgmon）
+
+`wg-traffic-monitor/` 是零成本流量监控：不动隧道本体，只读 `wg show all dump` 做增量记账。
+
+- 每晚 23:30 微信日报：当日总量 / 阈值使用率 / 各设备用量 / 本月累计
+- 当日累计达到阈值（默认 20 GB）立即告警，每天最多 1 次
+- 交互菜单可改阈值、日报时间、快照间隔、SendKey，支持卸载
+- **自动更新**：每天日报时比对 `wg-traffic-monitor/VERSION`，有新版自动下载、语法校验、
+  备份旧版后原子替换（校验失败则完全不动）；菜单 `12)` 可开关，`11)` 可手动检查
+- 更新源：GitHub raw 主通道 + jsdelivr CDN 兜底
+
+⚠️ 部署生成的 `config.ini` 含 SendKey，已被 `.gitignore` 排除，请勿手动提交。
 
 要求：Ubuntu 22.04（Debian 系亦可），root 权限。适配发行版列表见 `wg.sh` 内 `case` 分支（Ubuntu / Debian / AlmaLinux / Rocky / CentOS / Fedora / openSUSE）。
 

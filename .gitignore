@@ -2,4 +2,14 @@
 *.conf
 *.zip
 *.log
+*.db
 .workbuddy/
+
+# wgmon 运行时文件（含 SendKey / 流量数据 / 更新备份），严禁入库
+config.ini
+**/config.ini
+wgmon.db
+*.new
+*.bak-*
+__pycache__/
+*.pyc
