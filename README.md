@@ -11,6 +11,33 @@ WireGuard 组网服务器一键安装 / 管理脚本（阿里云 Ubuntu 实测�
 
 上游血统：脚本基于 [Nyr 的 openvpn-install](https://github.com/Nyr/openvpn-install) 系 WireGuard 分支（版权行见脚本运行横幅），由包崽同学二改汉化，Ma6302 在其上做了 10 项修复与体验优化（F1~F10，详见 [CHANGELOG.md](CHANGELOG.md)）。
 
+## 一键部署（新服务器）
+
+在目标服务器上以 root 执行（**先下载再运行**，不要用 `curl ... | bash`——管道会吃掉 wg.sh 与 SendKey 的交互输入）：
+
+```bash
+curl -fsSL -o /root/deploy.sh https://raw.githubusercontent.com/Ma6302/wireguard-setup-scripts/main/deploy.sh \
+  && bash /root/deploy.sh
+```
+
+国内网络访问 GitHub 慢时，可换 CDN 镜像（同样内容）：
+
+```bash
+curl -fsSL -o /root/deploy.sh https://cdn.jsdelivr.net/gh/Ma6302/wireguard-setup-scripts@main/deploy.sh \
+  && bash /root/deploy.sh
+```
+
+引导脚本会依次完成：下载 `wg.sh` 与 wgmon（GitHub raw 主通道 + jsdelivr 兜底，均带语法校验）
+→ 放置 `/root/wg.sh`（已有则先备份再替换）
+→ 未装 WireGuard 时自动拉起 `wg.sh` 交互安装
+→ 安装 wgmon 到 `/opt/wgmon`（保留已有 `config.ini`）、装定时任务、建 `wgmon` 快捷命令。
+
+| 参数 | 作用 |
+|---|---|
+| `--dry-run` | 只下载并校验，不修改服务器任何文件 |
+| `--sendkey=KEY` | 非交互指定 Server酱 SendKey（不填则安装时提示输入） |
+| `--no-wg` | 跳过 wg.sh（WireGuard 已装好时用） |
+
 ## 内容
 
 | 文件 | 说明 |
