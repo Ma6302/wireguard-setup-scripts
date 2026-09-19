@@ -37,6 +37,9 @@ curl -fsSL -o /root/deploy.sh https://cdn.jsdelivr.net/gh/Ma6302/wireguard-setup
 | `--dry-run` | 只下载并校验，不修改服务器任何文件 |
 | `--sendkey=KEY` | 非交互指定 Server酱 SendKey（不填则安装时提示输入） |
 | `--no-wg` | 跳过 wg.sh（WireGuard 已装好时用） |
+| `--ref=REF` | 指定 git ref（分支/标签）。默认自动解析为**最新的 `vX.Y.Z` Release 标签**（整仓不可变快照）；加 `--ref=main` 可跟随分支最新提交 |
+
+> 部署完成后**不需要**再手动 `wgmon check-update`——当天日报后会自动检查；想立刻升级就执行一次。
 
 ## 内容
 
@@ -46,6 +49,8 @@ curl -fsSL -o /root/deploy.sh https://cdn.jsdelivr.net/gh/Ma6302/wireguard-setup
 | `harden-ssh.sh` | SSH 加固（root 仅密钥登录、关闭密码登录；幂等、可回滚，`--check` 只读查看） |
 | `wg-forward-guard.sh` + `.service` | WireGuard 出方向防护：抑制客户端异常扫描/P2P 行为，防止云平台误判「对外攻击」触发全端口阻断 |
 | `wg-traffic-monitor/` | **流量监控 + 微信日报**（wgmon）：增量记账统计各设备/当日/当月流量，阈值告警，定时日报，支持 GitHub 自动更新 |
+| `deploy.sh` | **一键部署引导**（新服务器）：下载 wg.sh + wgmon → 校验 → 放置 → 按需拉起 WireGuard 安装 → 装监控与定时任务。支持 `--dry-run` / `--sendkey=` / `--no-wg` / `--ref=` |
+| `publish-via-api.py` | **维护者发布工具**：本机 git 通道不通时，用 GitHub Git Data API 逐层重建提交（哈希与本地一致、历史不分叉）。见下方「发布」 |
 | `CHANGELOG.md` | 完整迭代日志（A→C6 共 9 个版本，每项修复的原理、部署与验证记录） |
 | `docs/versions/` | 全部历史版本快照（文件名内嵌行数与 md5 前 8 位） |
 
@@ -79,10 +84,12 @@ cd wg-traffic-monitor && bash install.sh
 - **单版本流发布（维护者）**：tag 指向整仓快照（wg.sh + wgmon + deploy.sh 都在里面），
   **无需为未改动的组件重复上传文件**；组件是否升级由各自 `VERSION` 决定：
   ```bash
-  git tag v1.3.0 && git push origin v1.3.0
-  gh release create v1.3.0 --title "v1.3.0" --notes "本次变更：..."
+  git tag v1.3.1 && git push origin v1.3.1
+  gh release create v1.3.1 --title "v1.3.1" --notes "本次变更：..."
   ```
-  只推 main 不打标签的提交**不会**被已部署服务器安装
+  只推 main 不打标签的提交**不会**被已部署服务器安装。
+  完整流程（含发版前检查、发版后回读验证、**git 推不上去时的 API 绕行**）见
+  [`wg-traffic-monitor/README.md`](wg-traffic-monitor/README.md)；绕行脚本：`publish-via-api.py`
 
 ⚠️ 部署生成的 `config.ini` 含 SendKey，已被 `.gitignore` 排除，请勿手动提交。
 

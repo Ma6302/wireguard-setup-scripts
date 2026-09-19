@@ -30,7 +30,10 @@ WireGuard 内核为每个 peer 维护**自接口启动起累计**的 rx/tx 字�
 | `wgmon.py` | 全部逻辑（单文件，仅 Python3 标准库） |
 | `VERSION` | 版本号（自动更新用，与脚本内 `VERSION` 常量比较） |
 | `config.example.ini` | 配置模板；部署后为 `/opt/wgmon/config.ini`（⚠️ 含 SendKey，勿提交到仓库） |
-| `install.sh` | 一键部署（不覆盖已有配置） |
+| `install.sh` | 一键部署（本目录内的单组件安装，不覆盖已有配置） |
+
+> 新服务器整体部署请用**仓库根目录**的 `deploy.sh`（同时装 wg.sh + wgmon，见根目录 README）；
+> 发布工具 `publish-via-api.py` 也在仓库根目录。
 
 ## 部署
 ```bash
@@ -86,14 +89,41 @@ wgmon uninstall                    # 交互确认：移除定时任务+快捷命
 
 1. 改代码。若改的是 wgmon，**同步提升**脚本内 `VERSION` 常量与 `wg-traffic-monitor/VERSION`（两处必须一致）；
    只改 wg.sh 则**不动** wgmon 的版本号（这样服务器检查后会发现组件版本没变，不会白装）
-2. `git add -A && git commit && git push`
+2. `git add -A && git commit && git push`（**推不上去时见下方「上传通道不通怎么办」**）
 3. 打标签并发布 Release（推荐 `vX.Y.Z`；发布说明里注明本次改了哪个组件）：
    ```bash
-   git tag v1.3.0 && git push origin v1.3.0
-   gh release create v1.3.0 --title "v1.3.0" --notes "本次变更：wgmon 1.3.0（...）"
+   git tag v1.3.1 && git push origin v1.3.1
+   gh release create v1.3.1 --title "v1.3.1" --notes "本次变更：wgmon 1.3.1（...）"
+   gh release upload v1.3.1 wg-traffic-monitor/wgmon.py --clobber   # 附件可选，仅为人工下载方便
    ```
 4. 已部署服务器会在**当天日报后自动升级**（仅当它对应组件有新版本），或立刻 `wgmon check-update`
 5. 只推 main 不打标签 → 走 `channel = release` 的服务器**不会**升级（这正是"只发布已验证版本"的保险）
+
+### 上传通道不通怎么办（本机代理只放行 `api.github.com`）
+
+若 `git push` 报 `CONNECT tunnel failed, response 502`、`Failed to connect to github.com port 443`
+或长时间挂住，说明 git-over-HTTPS 通道不可用。**两条绕行路线**：
+
+**路线 A（推荐，最省事）**：开着 Clash Verge 再推 —— git **不读** Windows 系统代理，必须显式指定：
+```bash
+git -c http.proxy=http://127.0.0.1:7897 push
+# 7897 是 Clash Verge 的 mixed 端口；用前先确认 Clash 已启动、端口在听
+```
+
+**路线 B（不需要代理）**：用 GitHub **Git Data API** 逐层重建提交 —— 脚本 `publish-via-api.py`
+（项目主目录 / 仓库根目录都有）：
+```bash
+python publish-via-api.py --dry-run     # 先看会做什么（含防误造分叉的前置检查）
+python publish-via-api.py               # 实际推送
+```
+它走 `api.github.com`（通常可达），顺序是 **blob → tree → commit → PATCH ref**，
+作者 / 提交时间 / 提交信息全部照抄本地，因此**远端 commit 哈希与本地完全一致**，历史不分叉、
+不需要事后 `fetch && reset`。任一级哈希对不上就终止、不推进 ref（宁可不推也不造分叉）。
+
+> **注意**：`gh release create` 在 Windows 上不认 `/tmp` 路径（gh 是原生 Windows 程序），
+> `--notes-file` 请用仓库内**相对路径**；附件用**位置参数**或 `gh release upload`，
+> gh 2.99 的 `--attach` 会报 usage 错误。大附件给足 timeout（100 MB 量级 ≥10 分钟）。
+> 打完包**务必回读验证**（见下方「发版检查清单」），"命令没报错"不等于发布成功。
 
 ## 发版检查清单（维护者）
 发布前后各跑一遍。**"命令没报错"不等于成功，必须有回读证据**——本项目实测过
@@ -127,8 +157,8 @@ gh release view $TAG --repo $REPO --json assets \
 ```
 
 > **gh 在 Windows 上的两个坑**：`--notes-file` 要用仓库内相对路径（不认 `/tmp`）；
-> 附件用**位置参数**传（`gh release create <tag> <file>`），gh 2.99 的 `--attach` 会报 usage 错误。
-> 附件上传慢时给足 timeout（100 MB 量级 ≥10 分钟）。
+> 附件用**位置参数**（`gh release create <tag> <file>`）或 `gh release upload`，
+> gh 2.99 的 `--attach` 会报 usage 错误。详见上方「上传通道不通怎么办」。
 
 ### 服务器侧验收
 ```bash
