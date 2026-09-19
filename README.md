@@ -9,7 +9,7 @@ WireGuard 组网服务器一键安装 / 管理脚本（阿里云 Ubuntu 实测�
 | 原作者（二改汉化） | 包崽同学 |
 | 优化维护 | **Ma6302**（[github.com/Ma6302](https://github.com/Ma6302)） |
 
-上游血统：脚本基于 [Nyr 的 openvpn-install](https://github.com/Nyr/openvpn-install) 系 WireGuard 分支（版权行见脚本运行横幅），由包崽同学二改汉化，Ma6302 在其上做了 10 项修复与体验优化（F1~F10，详见 [CHANGELOG.md](CHANGELOG.md)）。
+上游血统：脚本基于 [Nyr 的 openvpn-install](https://github.com/Nyr/openvpn-install) 系 WireGuard 分支（版权行见脚本运行横幅），由包崽同学二改汉化，Ma6302 在其上做了 11 项修复与体验优化（F1~F11，详见 [CHANGELOG.md](CHANGELOG.md)）。
 
 ## 一键部署（新服务器）
 
@@ -45,13 +45,14 @@ curl -fsSL -o /root/deploy.sh https://cdn.jsdelivr.net/gh/Ma6302/wireguard-setup
 
 | 文件 | 说明 |
 |---|---|
-| `wg.sh` | 主脚本：WireGuard 服务端一键安装 + 管理菜单（添加/删除客户端、QR 码、peer 名称显示） |
+| `wg.sh` | 主脚本：WireGuard 服务端一键安装 + 管理菜单（添加客户端 / **管理已有客户端**（列出·删除·QR 码）/ 卸载，`wg show` 显示 peer 名称） |
+| `WGSH_VERSION` | **wg.sh 版本声明**（仓库根）。`wgmon` 的自更新用它和服务器上 `/root/wg.sh` 内的 `WG_SH_VERSION` 标记比对 |
 | `harden-ssh.sh` | SSH 加固（root 仅密钥登录、关闭密码登录；幂等、可回滚，`--check` 只读查看） |
 | `wg-forward-guard.sh` + `.service` | WireGuard 出方向防护：抑制客户端异常扫描/P2P 行为，防止云平台误判「对外攻击」触发全端口阻断 |
-| `wg-traffic-monitor/` | **流量监控 + 微信日报**（wgmon）：增量记账统计各设备/当日/当月流量，阈值告警，定时日报，支持 GitHub 自动更新 |
+| `wg-traffic-monitor/` | **流量监控 + 微信日报**（wgmon）：增量记账统计各设备/当日/当月流量，阈值告警，定时日报，支持 **wgmon 与 wg.sh 双组件** GitHub 自动更新 |
 | `deploy.sh` | **一键部署引导**（新服务器）：下载 wg.sh + wgmon → 校验 → 放置 → 按需拉起 WireGuard 安装 → 装监控与定时任务。支持 `--dry-run` / `--sendkey=` / `--no-wg` / `--ref=` |
 | `publish-via-api.py` | **维护者发布工具**：本机 git 通道不通时，用 GitHub Git Data API 逐层重建提交（哈希与本地一致、历史不分叉）。见下方「发布」 |
-| `CHANGELOG.md` | 完整迭代日志（A→C6 共 9 个版本，每项修复的原理、部署与验证记录） |
+| `CHANGELOG.md` | 完整迭代日志（A→C7 共 10 个版本，每项修复的原理、部署与验证记录） |
 | `docs/versions/` | 全部历史版本快照（文件名内嵌行数与 md5 前 8 位） |
 
 ## 使用
@@ -75,17 +76,21 @@ cd wg-traffic-monitor && bash install.sh
 
 `wg-traffic-monitor/` 是零成本流量监控：不动隧道本体，只读 `wg show all dump` 做增量记账。
 
-- 每晚 23:30 微信日报：当日总量 / 阈值使用率 / 各设备用量 / 本月累计
+- 每晚 23:35 微信日报：当日总量 / 阈值使用率 / 各设备用量 / 本月累计
 - 当日累计达到阈值（默认 20 GB）立即告警，每天最多 1 次
 - 交互菜单可改阈值、日报时间、快照间隔、SendKey，支持卸载
-- **自动更新（从 Release 标签快照）**：每天日报后检查最新项目标签，读取**标签内
-  `wg-traffic-monitor/VERSION`** 与本地比较——版本变了才下载（raw + jsdelivr 双通道锁定同一标签）
-  → 校验 → 备份旧版 → 原子替换；任一步失败则完全不动。菜单 `12)` 开关、`11)` 手动检查
+- **自动更新（双组件，从 Release 标签快照）**：每天日报后检查最新项目标签，两个组件**各自**比对版本 ——
+  - `wgmon`：标签内 `wg-traffic-monitor/VERSION` vs 本地 `VERSION` 常量
+  - `wg.sh`：标签根 `WGSH_VERSION` vs 服务器 `/root/wg.sh` 内的 `WG_SH_VERSION` 标记（老脚本无标记则更新一次对齐）
+
+  **谁有新版本更新谁**，校验（版本一致 + 语法：`py_compile` / `bash -n`）→ 备份旧版 → 原子替换，
+  微信通知写明「更新了哪个」。`wg.sh` **只换文件，不执行、不影响运行中的隧道**（raw + jsdelivr 双通道锁定同一标签）。
+  菜单 `12)` 开关自动更新、`11)` 手动检查；`update_wgsh = false` 可单独关掉 wg.sh 的自动更新
 - **单版本流发布（维护者）**：tag 指向整仓快照（wg.sh + wgmon + deploy.sh 都在里面），
-  **无需为未改动的组件重复上传文件**；组件是否升级由各自 `VERSION` 决定：
+  **无需为未改动的组件重复上传文件**；组件是否升级由各自版本文件决定：
   ```bash
-  git tag v1.3.1 && git push origin v1.3.1
-  gh release create v1.3.1 --title "v1.3.1" --notes "本次变更：..."
+  git tag v1.4.0 && git push origin v1.4.0
+  gh release create v1.4.0 --title "v1.4.0" --notes "本次变更：..."
   ```
   只推 main 不打标签的提交**不会**被已部署服务器安装。
   完整流程（含发版前检查、发版后回读验证、**git 推不上去时的 API 绕行**）见
@@ -102,6 +107,8 @@ cd wg-traffic-monitor && bash install.sh
 - **F8**：客户端 `AllowedIPs` 的 `::/0` 门控——服务器无 IPv6 时不再下发，避免 IPv6 黑洞
 - **F9**：`wg show` 每个 peer 显示名称（终端场景附加，管道/脚本调用输出与原版逐字节一致）
 - **F10**：主菜单循环化——一次运行可连续执行多个操作；EOF/取消均安全返回
+- **F11**：菜单二级化——主菜单 6 项精简为 4 项，三个客户端管理操作收进「管理已有客户端」二级菜单
+  （进入即显示已有客户端清单）；同时脚本内新增 `WG_SH_VERSION` 版本标记，供 wgmon 自动更新比对
 
 ## 免责声明
 

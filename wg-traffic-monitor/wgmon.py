@@ -7,7 +7,8 @@ wgmon —— WireGuard 流量监控 + 微信日报（零成本方案）
   1. 定时快照（cron 每 10 分钟）：解析 wg show all dump，增量记账到 SQLite
   2. 当日累计流量达到阈值时推送告警（每天最多 1 次，跨天自动重置）
   3. 每日固定时间推送流量日报到微信（Server酱·「方糖」服务号，免费）
-  4. 自动更新：每天日报时比对 GitHub 仓库版本号，有新版自动下载安装（可在菜单开关）
+  4. 自动更新：每天日报时比对 GitHub，**wgmon 与 wg.sh 两个组件各自检查**，
+     谁有新版本就更新谁，并通知"更新了哪个"（可在菜单/配置开关）
   5. 交互菜单：查看用量 / 立即推送 / 修改阈值 / 修改推送时间 / 修改 SendKey / 卸载 / 更新
 
 子命令：
@@ -19,11 +20,12 @@ wgmon —— WireGuard 流量监控 + 微信日报（零成本方案）
   install-cron 安装/刷新定时任务（按服务器时区自动换算）
   uninstall    卸载：移除定时任务与快捷命令（是否删脚本/数据交互确认）
   update       更新器：上传 wgmon.py.new / wg.sh.new 后执行，校验+备份+原子替换
-  check-update 从 GitHub 检查并安装新版（版本号比较）
-  version      打印当前版本号
+  check-update 从 GitHub 检查并安装新版（wgmon 与 wg.sh 都检查，谁有新版更新谁）
+  version      打印当前版本号（wgmon 与 wg.sh 各一行）
   menu         交互菜单（需要终端）
 
-依赖：仅 Python3 标准库。不修改 wg0.conf / wg.sh / 任何系统服务，纯只读监控。
+依赖：仅 Python3 标准库。不修改 wg0.conf / 任何系统服务；对 wg.sh 只做
+"换成新版文件"这一件事（备份 + 原子替换），不执行它、不启动任何服务。
 """
 
 import configparser
@@ -48,12 +50,21 @@ DB_PATH = os.path.join(BASE_DIR, "wgmon.db")
 CRON_TAG = "wgmon.py"  # crontab 幂等标记
 
 # 版本号（与仓库 wg-traffic-monitor/VERSION 比较，决定是否自动更新）
-VERSION = "1.3.1"
+VERSION = "1.4.0"
 
 # 更新源：从项目 Release 标签（整仓快照）取，标签内 wg-traffic-monitor/VERSION 为准；
 # 识别 vX.Y.Z（推荐）与兼容 wgmon-vX.Y.Z 两种标签名；找不到标签时回退 main 分支
 DEFAULT_REPO_SLUG = "Ma6302/wireguard-setup-scripts"
 TAG_RE = re.compile(r"^(?:wgmon-)?v(\d+(?:\.\d+)*)$")
+
+# 第二个可更新组件：服务器上的 wg.sh（安装脚本本身）。
+# 版本判据：仓库根 WGSH_VERSION（随标签走） vs wg.sh 文件内的 WG_SH_VERSION 标记。
+# 老版本 wg.sh（C7 之前）没有该标记 -> 版本视为未知 -> 更新一次即对齐。
+WG_SH_PATH = "/root/wg.sh"          # 默认路径，可用 config.ini [wgsh] path 覆盖
+WG_SH_REPO_PATH = "wg.sh"           # 仓库内路径（仓库根）
+WG_SH_VERSION_FILE = "WGSH_VERSION"  # 仓库根：wg.sh 版本声明文件
+WG_SH_VER_RE = re.compile(r'^WG_SH_VERSION=["\']?([\d.]+)["\']?', re.M)
+WG_VER_RE = re.compile(r'^VERSION = "([\d.]+)"', re.M)
 
 WG_DUMP_CMD = ["wg", "show", "all", "dump"]
 CLIENT_CONF_DIR = "/root"  # /root/<设备名>.conf
@@ -83,6 +94,13 @@ auto_update = true
 # 更新通道：release=从项目 Release 标签（整仓快照）取，标签内 VERSION 为准；main=从 main 分支取
 channel = release
 repo_slug = Ma6302/wireguard-setup-scripts
+# 是否连带检查并更新服务器上的 wg.sh（安装脚本本身）：
+# 两个组件各自比对版本，谁有新版本更新谁；替换脚本不影响运行中的隧道
+update_wgsh = true
+
+[wgsh]
+# 服务器上 wg.sh 的路径（需更新时会在同目录留一份 <文件名>.bak-<时间戳> 备份）
+path = /root/wg.sh
 """
 
 
@@ -106,6 +124,8 @@ def load_config():
         auto_update = cp.getboolean("update", "auto_update", fallback=True)
         channel = cp.get("update", "channel", fallback="release").strip().lower()
         repo_slug = cp.get("update", "repo_slug", fallback=DEFAULT_REPO_SLUG).strip()
+        update_wgsh = cp.getboolean("update", "update_wgsh", fallback=True)
+        wgsh_path = cp.get("wgsh", "path", fallback=WG_SH_PATH).strip() or WG_SH_PATH
 
     return Cfg()
 
@@ -139,6 +159,12 @@ def save_config(cfg):
         "# release=从项目 Release 标签（整仓快照）取；main=从 main 分支取",
         "channel = %s" % cfg.channel,
         "repo_slug = %s" % cfg.repo_slug,
+        "# 是否连带检查并更新服务器上的 wg.sh（安装脚本本身）",
+        "update_wgsh = %s" % ("true" if cfg.update_wgsh else "false"),
+        "",
+        "[wgsh]",
+        "# 服务器上 wg.sh 的路径（需更新时会在同目录留一份 <文件名>.bak-<时间戳> 备份）",
+        "path = %s" % cfg.wgsh_path,
     ]
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
@@ -528,6 +554,17 @@ def uninstall(cfg):
     return False
 
 
+def _bash_syntax_check(path):
+    """用 `bash -n` 校验脚本语法。返回 (是否通过, 错误文本)。
+    环境里没有可用的 bash 时按"不通过"处理（宁可拒绝更新，也不用没校验过的脚本覆盖）。"""
+    try:
+        p = subprocess.run(["bash", "-n", path], capture_output=True, text=True,
+                           errors="replace")
+    except OSError as e:
+        return False, "无法执行 bash 进行语法校验: %s" % e
+    return p.returncode == 0, (p.stderr or "").strip()[:300]
+
+
 def _backup_and_swap(new_path, target_path):
     """备份旧版后用新版原子替换；新文件继承旧文件权限。返回备份路径（无旧版时 None）。"""
     if os.path.exists(target_path):
@@ -571,13 +608,12 @@ def cmd_update(cfg):
     # 2) wg.sh：bash -n 语法校验通过才替换；wg.sh 是交互脚本，替换不影响运行中的隧道
     new_sh = "/root/wg.sh.new"
     if os.path.isfile(new_sh):
-        p = subprocess.run(["bash", "-n", new_sh], capture_output=True, text=True)
-        if p.returncode != 0:
+        ok, err = _bash_syntax_check(new_sh)
+        if not ok:
             try: os.remove(new_sh)
             except OSError: pass
             rejected += 1
-            print("wg.sh.new 语法校验失败，已清理 .new（旧版未做任何改动）：%s"
-                  % (p.stderr or "")[:300])
+            print("wg.sh.new 语法校验失败，已清理 .new（旧版未做任何改动）：%s" % err)
         else:
             bak = _backup_and_swap(new_sh, "/root/wg.sh")
             print("wg.sh 已更新%s。wg.sh 为交互脚本，替换不影响运行中的隧道。"
@@ -628,6 +664,20 @@ def fetch_file(cfg, path, ref):
     raise RuntimeError("; ".join(errs))
 
 
+def fetch_bin_file(cfg, path, ref, timeout=20):
+    """下载仓库内文件（二进制，不做编码转换）。
+    wg.sh 里中文与制表符很多，走文本下载再写回有损坏风险，故原样取字节。"""
+    errs = []
+    for url in (_raw_url(cfg.repo_slug, ref, path), _cdn_url(cfg.repo_slug, ref, path)):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "wgmon/%s" % VERSION})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read()
+        except Exception as e:
+            errs.append("%s: %s" % (url.split("/")[2], e))
+    raise RuntimeError("; ".join(errs))
+
+
 def latest_release_ref(cfg):
     """找最新的项目快照标签（整仓快照）：vX.Y.Z 或兼容的 wgmon-vX.Y.Z。
     先看 Releases（草稿不计），再看 Tags。返回 tag 名或 None。
@@ -655,12 +705,102 @@ def latest_release_ref(cfg):
     return None
 
 
+def local_wgsh_version(cfg):
+    """读服务器上 wg.sh 自己声明的版本（脚本内 WG_SH_VERSION="x.y.z"）。
+    C7 之前的老脚本没有这一行 -> 返回 None，调用方按「版本未知、更新一次」处理。"""
+    try:
+        with open(cfg.wgsh_path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return None
+    m = WG_SH_VER_RE.search(text)
+    return m.group(1) if m else None
+
+
+def _fetch_version(cfg, repo_path, ref, label, errors):
+    """取远端某文件的版本声明。失败不抛异常：记进 errors 并返回 None（不影响另一组件）"""
+    try:
+        return fetch_file(cfg, repo_path, ref).strip()
+    except Exception as e:
+        errors.append("%s 版本检查失败: %s" % (label, e))
+        return None
+
+
+def _install_wgmon(cfg, ref, remote_ver):
+    """下载并安装 wgmon 新版。返回 (错误信息或 None, 备份路径或 None)"""
+    try:
+        code = fetch_file(cfg, REPO_PREFIX + "/wgmon.py", ref)
+    except Exception as e:
+        return "wgmon 下载失败: %s" % e, None
+    m = WG_VER_RE.search(code)
+    if not m or _ver_tuple(m.group(1)) != _ver_tuple(remote_ver):
+        return ("wgmon 下载内容与声明的版本不符（应为 v%s，文件内为 %s），已放弃更新"
+                % (remote_ver, m.group(1) if m else "未找到版本号")), None
+    new_py = os.path.join(BASE_DIR, "wgmon.py.new")
+    with open(new_py, "w", encoding="utf-8", newline="\n") as f:
+        f.write(code)
+    try:
+        py_compile.compile(new_py, doraise=True,
+                           cfile=os.path.join(tempfile.gettempdir(), "wgmon_new_check.pyc"))
+    except py_compile.PyCompileError as e:
+        try:
+            os.remove(new_py)
+        except OSError:
+            pass
+        return "wgmon 新版语法校验失败，已放弃更新（当前版本未改动）: %s" % e, None
+    bak = _backup_and_swap(new_py, os.path.join(BASE_DIR, "wgmon.py"))
+    return None, bak
+
+
+def _install_wgsh(cfg, ref, remote_ver):
+    """下载并安装 wg.sh 新版（只替换文件，不执行它、不重启任何服务）。
+    与现有文件逐字节相同则跳过替换。
+    返回 (错误信息或 None, 备份路径或 None, 是否真的替换了文件)"""
+    path = cfg.wgsh_path
+    try:
+        data = fetch_bin_file(cfg, WG_SH_REPO_PATH, ref)
+    except Exception as e:
+        return "wg.sh 下载失败: %s" % e, None, False
+    m = WG_SH_VER_RE.search(data.decode("utf-8", "replace"))
+    emb = m.group(1) if m else None
+    if emb is None or _ver_tuple(emb) != _ver_tuple(remote_ver):
+        return ("wg.sh 下载内容与声明的版本不符（应为 v%s，文件内为 %s），已放弃更新"
+                % (remote_ver, emb or "未找到版本标记")), None, False
+    if os.path.isfile(path):
+        try:
+            with open(path, "rb") as f:
+                if f.read() == data:
+                    return None, None, False  # 内容一致，不必替换
+        except OSError:
+            pass
+    new_sh = path + ".new"
+    with open(new_sh, "wb") as f:
+        f.write(data)
+    os.chmod(new_sh, 0o755)
+    ok, err = _bash_syntax_check(new_sh)
+    if not ok:
+        try:
+            os.remove(new_sh)
+        except OSError:
+            pass
+        return ("wg.sh 新版语法校验失败，已放弃更新（当前文件未改动）: %s"
+                % err), None, False
+    bak = _backup_and_swap(new_sh, path)
+    return None, bak, True
+
+
 def check_update(cfg, interactive=False):
-    """检查更新：默认从最新项目 Release 标签（整仓不可变快照）取，取不到再回退 main 分支。
-    是否需要更新以「标签内 wg-traffic-monitor/VERSION」与本地 VERSION 比较为准
-    （因此只有 wg.sh 改动的版本不会触发 wgmon 更新）。
-    有新版则 下载 -> 校验（语法 + 版本号一致性）-> 备份 -> 原子替换；
-    config.ini / wgmon.db / crontab 全部不动。返回 0=无更新 1=已更新 2=失败"""
+    """检查更新：wgmon 与 wg.sh 两个组件各自比对版本，谁有新版本就更新谁。
+
+    更新源：优先最新项目 Release 标签（整仓不可变快照），取不到再回退 main 分支。
+    版本判据：
+      · wgmon —— 标签内 wg-traffic-monitor/VERSION vs 本地 VERSION
+      · wg.sh —— 标签根 WGSH_VERSION vs 本地文件里的 WG_SH_VERSION 标记
+                 （C7 之前的老脚本没有该标记 -> 版本未知 -> 更新一次即对齐）
+    安装前都校验（版本一致 + 语法：wgmon 用 py_compile，wg.sh 用 bash -n），
+    通过后备份旧版并原子替换；wg.sh 只换文件，不执行、不影响运行中的隧道。
+    config.ini / wgmon.db / crontab / wg0.conf 全部不动。
+    返回 0=无需更新 1=至少更新了一个组件 2=检查失败（两个组件都没查到）"""
     ref, src = None, ""
     if cfg.channel == "release":
         ref = latest_release_ref(cfg)
@@ -670,18 +810,48 @@ def check_update(cfg, interactive=False):
             print("未找到 Release 标签（vX.Y.Z / wgmon-vX.Y.Z），回退检查 main 分支")
     if ref is None:
         ref, src = "main", "main 分支"
-    try:
-        remote = fetch_file(cfg, REPO_PREFIX + "/VERSION", ref).strip()
-    except Exception as e:
-        print("检查更新失败（网络或仓库不可达）: %s" % e)
-        return 2
-    if _ver_tuple(remote) <= _ver_tuple(VERSION):
-        if interactive:
-            print("已是最新版本 v%s（来源: %s）" % (VERSION, src))
+
+    errors, plan, results = [], [], []
+
+    # 组件 1：wgmon 自身
+    remote_wgmon = _fetch_version(cfg, REPO_PREFIX + "/VERSION", ref, "wgmon", errors)
+    if remote_wgmon is not None:
+        if _ver_tuple(remote_wgmon) <= _ver_tuple(VERSION):
+            results.append(("wgmon", VERSION, remote_wgmon, "已是最新"))
         else:
-            print("update check: up to date (v%s, %s)" % (VERSION, src))
-        return 0
-    print("发现新版本：v%s → v%s（来源: %s）" % (VERSION, remote, src))
+            plan.append(("wgmon", VERSION, remote_wgmon))
+            results.append(("wgmon", VERSION, remote_wgmon, "待更新"))
+
+    # 组件 2：wg.sh（安装脚本本身）
+    if not cfg.update_wgsh:
+        results.append(("wg.sh", local_wgsh_version(cfg), None, "已关闭（update_wgsh = false）"))
+    else:
+        remote_sh = _fetch_version(cfg, WG_SH_VERSION_FILE, ref, "wg.sh", errors)
+        if remote_sh is not None:
+            if not os.path.isfile(cfg.wgsh_path):
+                results.append(("wg.sh", None, remote_sh, "跳过（未找到 %s）" % cfg.wgsh_path))
+            else:
+                local_sh = local_wgsh_version(cfg)
+                if local_sh and _ver_tuple(remote_sh) <= _ver_tuple(local_sh):
+                    results.append(("wg.sh", local_sh, remote_sh, "已是最新"))
+                else:
+                    plan.append(("wg.sh", local_sh, remote_sh))
+                    results.append(("wg.sh", local_sh, remote_sh, "待更新"))
+
+    if not plan:
+        if interactive:
+            print("更新源：%s" % src)
+            for name, lv, rv, state in results:
+                print("  %-6s %s：%s" % (name, "v" + lv if lv else "版本未知", state))
+            for e in errors:
+                print("  ! %s" % e)
+        else:
+            print("update check: 无需更新（%s，wgmon v%s / wg.sh %s）"
+                  % (src, VERSION, local_wgsh_version(cfg) or "版本未知"))
+        return 2 if (errors and not results) else 0
+
+    names = "、".join("%s %s → v%s" % (n, "v" + lv if lv else "旧版", rv) for n, lv, rv in plan)
+    print("发现更新：%s（来源: %s）" % (names, src))
     if interactive:
         try:
             if input("立即更新? (Y/n): ").strip().lower() == "n":
@@ -690,32 +860,40 @@ def check_update(cfg, interactive=False):
         except (EOFError, KeyboardInterrupt):
             print("\n已取消。")
             return 0
-    try:
-        code = fetch_file(cfg, REPO_PREFIX + "/wgmon.py", ref)
-    except Exception as e:
-        print("下载失败: %s" % e)
+
+    updated = []
+    for name, lv, rv in plan:
+        if name == "wgmon":
+            err, bak = _install_wgmon(cfg, ref, rv)
+            changed = err is None
+        else:
+            err, bak, changed = _install_wgsh(cfg, ref, rv)
+        if err:
+            errors.append(err)
+            print("! %s" % err)
+            continue
+        if changed:
+            updated.append((name, lv, rv, bak))
+            print("%s 已更新到 v%s%s" % (name, rv, "（备份: %s）" % bak if bak else ""))
+        else:
+            print("%s 内容与远端一致，跳过替换（版本记为 v%s）" % (name, rv))
+
+    if updated:
+        body = []
+        for name, lv, rv, bak in updated:
+            body.append("· %s：%s → v%s%s" % (
+                name, "v" + lv if lv else "旧版（无版本标记）", rv,
+                "\n  备份：%s" % bak if bak else ""))
+        notify(cfg, "组件已更新：" + "、".join("%s→v%s" % (n, rv) for n, _, rv, _ in updated),
+               "以下组件已自动更新完成（来源: %s）：\n\n%s\n\n配置与流量数据不受影响；"
+               "wg.sh 只换了文件，未执行、未影响运行中的隧道。\n时间：%s（北京时间）"
+               % (src, "\n".join(body), now_bj(cfg).strftime("%Y-%m-%d %H:%M")))
+        if any(n == "wgmon" for n, _, _, _ in updated):
+            print("wgmon 新代码自下次运行生效。")
+        return 1
+    if errors and len(errors) == len(plan):
         return 2
-    m = re.search(r'^VERSION = "([\d.]+)"', code, re.M)
-    if not m or _ver_tuple(m.group(1)) != _ver_tuple(remote):
-        print("下载内容与声明的版本不符（应为 v%s，文件内为 %s），已放弃更新"
-              % (remote, m.group(1) if m else "未找到版本号"))
-        return 2
-    new_py = os.path.join(BASE_DIR, "wgmon.py.new")
-    with open(new_py, "w", encoding="utf-8", newline="\n") as f:
-        f.write(code)
-    try:
-        py_compile.compile(new_py, doraise=True,
-                           cfile=os.path.join(tempfile.gettempdir(), "wgmon_new_check.pyc"))
-    except py_compile.PyCompileError as e:
-        os.remove(new_py)
-        print("新版语法校验失败，已放弃更新（当前版本未改动）: %s" % e)
-        return 2
-    bak = _backup_and_swap(new_py, os.path.join(BASE_DIR, "wgmon.py"))
-    print("已更新到 v%s%s。新代码自下次运行生效。" % (remote, "（备份: %s）" % bak if bak else ""))
-    notify(cfg, "wgmon 已自动更新 v%s → v%s" % (VERSION, remote),
-           "新版 v%s 已自动安装完成（来源: %s），配置与流量数据不受影响。\n\n旧版备份：%s\n时间：%s（北京时间）"
-           % (remote, src, bak or "无", now_bj(cfg).strftime("%Y-%m-%d %H:%M")))
-    return 1
+    return 0
 
 
 # ---------------------------------------------------------------- 子命令
@@ -771,6 +949,12 @@ def cmd_status(cfg):
         print("当日各设备用量: （暂无数据，等待下次快照）")
     print("-" * 60)
     print("本月累计: ↓%s ↑%s 合计 %s" % (human(mtx), human(mrx), human(mrx + mtx)))
+    print("-" * 60)
+    sh_ver = local_wgsh_version(cfg)
+    print("组件版本: wgmon v%s ｜ wg.sh %s%s" % (
+        VERSION,
+        ("v" + sh_ver) if sh_ver else ("未安装" if not os.path.isfile(cfg.wgsh_path) else "版本未知（旧版）"),
+        "" if cfg.update_wgsh else "（wg.sh 自动更新已关闭）"))
 
 
 def cmd_report(cfg):
@@ -804,8 +988,10 @@ def cmd_menu(cfg):
         print("8) 重装定时任务")
         print("9) 卸载 wgmon（移除定时任务/快捷命令，可选删数据）")
         print("10) 更新 wgmon / wg.sh（上传 .new 文件后执行，保留配置）")
-        print("11) 检查并安装更新（来源: %s，当前 v%s）" % (
-            "Release 标签" if cfg.channel == "release" else "main 分支", VERSION))
+        print("11) 检查并安装更新（wgmon v%s / wg.sh %s，来源: %s）" % (
+            VERSION,
+            ("v" + local_wgsh_version(cfg)) if local_wgsh_version(cfg) else "未知",
+            "Release 标签" if cfg.channel == "release" else "main 分支"))
         print("12) 自动更新（每天日报时自动检查安装，当前 %s）" % ("开" if cfg.auto_update else "关"))
         print("0) 退出")
         choice = input("请选择: ").strip()
@@ -905,9 +1091,14 @@ def main():
         elif cmd == "check-update":
             sys.exit(check_update(cfg, interactive=True))
         elif cmd == "version":
+            sh_ver = local_wgsh_version(cfg)
             print("wgmon v%s（更新通道: %s，来源: %s）" % (
                 VERSION, cfg.channel,
                 "Release 标签（vX.Y.Z）" if cfg.channel == "release" else "main 分支"))
+            print("wg.sh  %s  %s%s" % (
+                ("v" + sh_ver) if sh_ver else ("未安装" if not os.path.isfile(cfg.wgsh_path) else "版本未知（C7 之前的旧版）"),
+                cfg.wgsh_path,
+                "" if cfg.update_wgsh else "（wg.sh 自动更新已关闭）"))
         elif cmd == "menu":
             cmd_menu(cfg)
         else:
