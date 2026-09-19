@@ -48,7 +48,7 @@ DB_PATH = os.path.join(BASE_DIR, "wgmon.db")
 CRON_TAG = "wgmon.py"  # crontab 幂等标记
 
 # 版本号（与仓库 wg-traffic-monitor/VERSION 比较，决定是否自动更新）
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 # 更新源：从项目 Release 标签（整仓快照）取，标签内 wg-traffic-monitor/VERSION 为准；
 # 识别 vX.Y.Z（推荐）与兼容 wgmon-vX.Y.Z 两种标签名；找不到标签时回退 main 分支
@@ -551,6 +551,7 @@ def cmd_update(cfg):
     print("  - wgmon 新版 -> /opt/wgmon/wgmon.py.new")
     print("  - wg.sh 新版 -> /root/wg.sh.new")
     did = False
+    rejected = 0  # 被语法校验拒绝、并已清理的 .new 数量
     # 1) wgmon 自身：py_compile 校验通过才替换
     new_py = os.path.join(BASE_DIR, "wgmon.py.new")
     if os.path.isfile(new_py):
@@ -558,7 +559,10 @@ def cmd_update(cfg):
             py_compile.compile(new_py, doraise=True,
                                cfile=os.path.join(tempfile.gettempdir(), "wgmon_new_check.pyc"))
         except py_compile.PyCompileError as e:
-            print("wgmon.py.new 语法校验失败，已跳过（未做任何改动）：%s" % e)
+            try: os.remove(new_py)
+            except OSError: pass
+            rejected += 1
+            print("wgmon.py.new 语法校验失败，已清理 .new（旧版未做任何改动）：%s" % e)
         else:
             bak = _backup_and_swap(new_py, os.path.join(BASE_DIR, "wgmon.py"))
             print("wgmon 已更新%s。新代码自下次运行生效（当前菜单还是旧代码）。"
@@ -569,7 +573,10 @@ def cmd_update(cfg):
     if os.path.isfile(new_sh):
         p = subprocess.run(["bash", "-n", new_sh], capture_output=True, text=True)
         if p.returncode != 0:
-            print("wg.sh.new 语法校验失败，已跳过（未做任何改动）：%s"
+            try: os.remove(new_sh)
+            except OSError: pass
+            rejected += 1
+            print("wg.sh.new 语法校验失败，已清理 .new（旧版未做任何改动）：%s"
                   % (p.stderr or "")[:300])
         else:
             bak = _backup_and_swap(new_sh, "/root/wg.sh")
@@ -577,7 +584,10 @@ def cmd_update(cfg):
                   % ("（旧版备份: %s）" % bak if bak else ""))
             did = True
     if not did:
-        print("未发现 .new 文件，没有任何改动。")
+        if rejected:
+            print("共 %d 个 .new 文件被拒（语法错），均已清理，没有任何改动。" % rejected)
+        else:
+            print("未发现 .new 文件，没有任何改动。")
     print("确认新版正常后，可删除备份：rm -f %s/wgmon.py.bak-* /root/wg.sh.bak-*"
           % BASE_DIR)
 
