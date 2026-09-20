@@ -45,14 +45,14 @@ curl -fsSL -o /root/deploy.sh https://cdn.jsdelivr.net/gh/Ma6302/wireguard-setup
 
 | 文件 | 说明 |
 |---|---|
-| `wg.sh` | 主脚本：WireGuard 服务端一键安装 + 管理菜单（添加客户端 / **管理已有客户端**（列出·删除·QR 码）/ 卸载，`wg show` 显示 peer 名称） |
+| `wg.sh` | 主脚本：WireGuard 服务端一键安装 + 管理菜单（添加客户端 / **管理已有客户端**（列出·删除·QR 码）/ **网络优化开关** / 卸载，`wg show` 显示 peer 名称） |
 | `WGSH_VERSION` | **wg.sh 版本声明**（仓库根）。`wgmon` 的自更新用它和服务器上 `/root/wg.sh` 内的 `WG_SH_VERSION` 标记比对 |
 | `harden-ssh.sh` | SSH 加固（root 仅密钥登录、关闭密码登录；幂等、可回滚，`--check` 只读查看） |
 | `wg-forward-guard.sh` + `.service` | WireGuard 出方向防护：抑制客户端异常扫描/P2P 行为，防止云平台误判「对外攻击」触发全端口阻断 |
 | `wg-traffic-monitor/` | **流量监控 + 微信日报**（wgmon）：增量记账统计各设备/当日/当月流量，阈值告警，定时日报，支持 **wgmon 与 wg.sh 双组件** GitHub 自动更新 |
 | `deploy.sh` | **一键部署引导**（新服务器）：下载 wg.sh + wgmon → 校验 → 放置 → 按需拉起 WireGuard 安装 → 装监控与定时任务。支持 `--dry-run` / `--sendkey=` / `--no-wg` / `--ref=` |
 | `publish-via-api.py` | **维护者发布工具**：本机 git 通道不通时，用 GitHub Git Data API 逐层重建提交（哈希与本地一致、历史不分叉）。见下方「发布」 |
-| `CHANGELOG.md` | 完整迭代日志（A→C7 共 10 个版本，每项修复的原理、部署与验证记录） |
+| `CHANGELOG.md` | 完整迭代日志（A→C9 共 12 个版本，每项修复的原理、部署与验证记录） |
 | `docs/versions/` | 全部历史版本快照（文件名内嵌行数与 md5 前 8 位） |
 
 ## 使用
@@ -110,6 +110,9 @@ cd wg-traffic-monitor && bash install.sh
 - **F10**：主菜单循环化——一次运行可连续执行多个操作；EOF/取消均安全返回
 - **F11**：菜单二级化——主菜单 6 项精简为 4 项，三个客户端管理操作收进「管理已有客户端」二级菜单
   （进入即显示已有客户端清单）；同时脚本内新增 `WG_SH_VERSION` 版本标记，供 wgmon 自动更新比对
+- **F12**：**网络优化开关**（v1.4.2 起，主菜单 3，**默认开启**）——fq_codel 队列 + `netdev_max_backlog=10000`
+  内核入口缓冲，实测回程抖动 mdev 改善约 40%（突发/拥塞时偶发延迟尖峰明显减少）；切换即时生效、
+  不影响在线隧道；关闭的选择持久化（重装/升级沿用），卸载后重装回到默认开启
 
 ## 免责声明
 

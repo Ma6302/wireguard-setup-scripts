@@ -80,13 +80,6 @@
 #        --showclientqr）完全不受影响。
 #        同时新增脚本版本标记（见文件顶部 WG_SH_VERSION），wgmon 自动更新
 #        据此判断服务器上的 wg.sh 是否需要更新。
-#   [F12] 网络优化开关（2026-09-20）：把 sysctl 网络优化（fq_codel 队列 +
-#        netdev_max_backlog=10000 内核入口缓冲）从"装死"改为可开关——主菜单
-#        新增「3) 网络优化」，一键切换并即时生效（tc qdisc + sysctl -w），
-#        不重启服务、不影响在线隧道。默认开启；用户关闭后标记文件
-#        /etc/wireguard/.net-optimize 记录选择，重装/升级 wg.sh 时沿用，
-#        不会被 update_sysctl 悄悄改回。实测依据：2026-09-20 阿里云轻量
-#        实测回程抖动 mdev 改善约 40%（15.6 -> 6.1~12.8）。
 #
 # 回滚：本文件不覆盖任何原始文件，直接删除即可。
 #       服务器侧改动可用 /etc/systemd/resolved.conf.bak 还原。
@@ -103,7 +96,7 @@ WireGuard 安装脚本
 # [F11] 脚本版本标记。wgmon 的自动更新会读取这一行来判断服务器上的
 #       wg.sh 是否需要更新；仓库根另有同内容的 WGSH_VERSION 文件。
 #       发版时两处必须同步修改（格式固定，勿改成多行或改写变量名）。
-WG_SH_VERSION="1.4.2"
+WG_SH_VERSION="1.4.1"
 
 # ─────────────────────────────────────────────────────────────
 # 系统 DNS 与 53 端口准备（[F1][F5][F6] 修订）
@@ -1300,96 +1293,13 @@ EOF
 }
 
 # 更新系统内核参数（启用IP转发、优化网络性能）
-# [F12] 网络优化开关（fq_codel 队列 + netdev_max_backlog 内核入口缓冲）。
-# 实测依据（2026-09-20 阿里云轻量）：回程抖动 mdev 改善约 40%（15.6 -> 6.1~12.8）。
-# 配置写入 /etc/sysctl.d/99-wireguard-optimize.conf（与 update_sysctl 同一文件），
-# 即时生效走 tc qdisc + sysctl -w，不重启服务、不影响在线隧道。
-# 用户关闭的选择记录在 NET_OPT_MARKER，重装/升级时沿用，不会被改回。
-NET_OPT_CONF="/etc/sysctl.d/99-wireguard-optimize.conf"
-NET_OPT_MARKER="/etc/wireguard/.net-optimize"
-
-# 检测主网卡（默认路由出口设备名），失败回退 eth0
-detect_main_nic() {
-  local nic
-  nic=$(ip -4 route get 1 2>/dev/null | awk '{print $5; exit}')
-  echo "${nic:-eth0}"
-}
-
-# 判断优化是否处于开启状态：配置文件中存在 fq_codel 行即视为开启
-net_opt_enabled() {
-  grep -q '^net\.core\.default_qdisc = fq_codel' "$NET_OPT_CONF" 2>/dev/null
-}
-
-# 开启网络优化：写入配置 + 即时应用（幂等，重复执行无副作用）
-net_opt_on() {
-  mkdir -p /etc/sysctl.d
-  touch "$NET_OPT_CONF"
-  # 先清掉旧的两行，避免重复追加
-  sed -i '/^net\.core\.default_qdisc = /d; /^net\.core\.netdev_max_backlog = /d' "$NET_OPT_CONF"
-  cat >>"$NET_OPT_CONF" <<'EOF'
-net.core.default_qdisc = fq_codel
-net.core.netdev_max_backlog = 10000
-EOF
-  rm -f "$NET_OPT_MARKER"
-  sysctl -e -q -p "$NET_OPT_CONF"
-  tc qdisc replace dev "$(detect_main_nic)" root fq_codel 2>/dev/null
-}
-
-# 关闭网络优化：恢复旧版行为（fq 队列、backlog 内核默认 1000），并记录用户选择
-net_opt_off() {
-  touch "$NET_OPT_CONF"
-  sed -i '/^net\.core\.default_qdisc = /d; /^net\.core\.netdev_max_backlog = /d' "$NET_OPT_CONF"
-  cat >>"$NET_OPT_CONF" <<'EOF'
-net.core.default_qdisc = fq
-EOF
-  echo off >"$NET_OPT_MARKER"
-  sysctl -e -q -w net.core.netdev_max_backlog=1000
-  sysctl -e -q -p "$NET_OPT_CONF"
-  tc qdisc replace dev "$(detect_main_nic)" root fq 2>/dev/null
-}
-
-# [F12] 菜单交互：显示当前状态，确认后切换（回车/N = 取消，返回主菜单）
-net_opt_menu() {
-  local nic
-  nic=$(detect_main_nic)
-  echo
-  if net_opt_enabled; then
-    echo "网络优化：当前【开启】（fq_codel 队列 + netdev_max_backlog=10000，网卡 $nic）"
-    echo "说明：实测可压低回程抖动（偶发延迟尖峰），关闭后恢复默认队列。"
-    read -rp "确认关闭网络优化？[y/N]：" ans || return 0
-    if [[ "$ans" =~ ^[yY]$ ]]; then
-      net_opt_off
-      echo
-      echo "网络优化已关闭（配置已持久化，重装/升级后仍保持关闭）。"
-    else
-      echo
-      echo "已取消，网络优化保持开启。"
-      return 1
-    fi
-  else
-    echo "网络优化：当前【关闭】"
-    echo "说明：开启后使用 fq_codel 队列 + 加大内核入口缓冲（netdev_max_backlog=10000），"
-    echo "      实测回程抖动 mdev 改善约 40%，突发流量下排队延迟更低。"
-    read -rp "确认开启网络优化？[Y/n]：" ans || return 0
-    if [[ ! "$ans" =~ ^[nN]$ ]]; then
-      net_opt_on
-      echo
-      echo "网络优化已开启（配置已持久化，重启后自动生效）。"
-    else
-      echo
-      echo "已取消，网络优化保持关闭。"
-      return 1
-    fi
-  fi
-}
-
 update_sysctl() {
   # 创建sysctl配置目录（若不存在）
   mkdir -p /etc/sysctl.d
   # 用于启用IP转发的配置文件
   conf_fwd="/etc/sysctl.d/99-wireguard-forward.conf"
   # 用于网络性能优化的配置文件
-  conf_opt="$NET_OPT_CONF"
+  conf_opt="/etc/sysctl.d/99-wireguard-optimize.conf"
   # 启用IPv4 IP转发（WireGuard必需）
   echo 'net.ipv4.ip_forward=1' >"$conf_fwd"
   # 若支持IPv6，启用IPv6转发
@@ -1407,25 +1317,17 @@ update_sysctl() {
       /bin/rm -f "$conf_opt"
       touch "$conf_opt"
     }
-  # 若内核版本>=4.20，启用TCP BBR + 队列管理（[F12] 默认开启网络优化；
-  #   fq_codel 主动队列管理：突发/拥塞时压低排队延迟，实测回程抖动 mdev 改善约 40%；
-  #   netdev_max_backlog 加大内核入口队列，防突发丢包。2026-09-20 在阿里云轻量实测。
-  #   用户曾通过菜单关闭（NET_OPT_MARKER 存在）则写旧版 fq 配置，沿用其选择）
+  # 若内核版本>=4.20，启用TCP BBR + fq_codel 队列管理
+  # （fq_codel 主动队列管理：突发/拥塞时压低排队延迟，实测回程抖动 mdev 改善约 40%；
+  #   netdev_max_backlog 加大内核入口队列，防突发丢包。2026-09-20 在阿里云轻量实测）
   if modprobe -q tcp_bbr &&
     printf '%s\n%s' "4.20" "$(uname -r)" | sort -C -V &&
     [ -f /proc/sys/net/ipv4/tcp_congestion_control ]; then
-    if [ -f "$NET_OPT_MARKER" ] && grep -q '^off$' "$NET_OPT_MARKER"; then
-      cat >>"$conf_opt" <<'EOF'
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-EOF
-    else
-      cat >>"$conf_opt" <<'EOF'
+    cat >>"$conf_opt" <<'EOF'
 net.core.default_qdisc = fq_codel
 net.core.netdev_max_backlog = 10000
 net.ipv4.tcp_congestion_control = bbr
 EOF
-    fi
   fi
   # 应用sysctl配置（无需重启系统）
   sysctl -e -q -p "$conf_fwd"
@@ -1550,23 +1452,16 @@ finish_setup() {
 select_menu_option() {
   echo
   echo "────────── WireGuard 管理菜单 ──────────"
-  # [F12] 菜单实时显示网络优化状态
-  if net_opt_enabled; then
-    net_opt_state="开启"
-  else
-    net_opt_state="关闭"
-  fi
   echo "   1) 添加新客户端"
   echo "   2) 管理已有客户端"
-  echo "   3) 网络优化 [当前：$net_opt_state]"
-  echo "   4) 卸载WireGuard"
-  echo "   5) 退出"
+  echo "   3) 卸载WireGuard"
+  echo "   4) 退出"
   # [F10] read 遇 EOF（Ctrl+D / stdin 关闭）时正常退出，避免死循环
-  read -rp "选择操作 [1-5]：" option || { echo; echo "已退出。"; exit 0; }
-  # 验证用户输入的合法性（必须是1-5的整数）
-  until [[ "$option" =~ ^[1-5]$ ]]; do
+  read -rp "选择操作 [1-4]：" option || { echo; echo "已退出。"; exit 0; }
+  # 验证用户输入的合法性（必须是1-4的整数）
+  until [[ "$option" =~ ^[1-4]$ ]]; do
     echo "$option：选择无效。"
-    read -rp "选择操作 [1-5]：" option || { echo; echo "已退出。"; exit 0; }
+    read -rp "选择操作 [1-4]：" option || { echo; echo "已退出。"; exit 0; }
   done
 }
 
@@ -1852,8 +1747,6 @@ disable_wg_service() {
 # 移除WireGuard相关的sysctl配置（恢复默认内核参数）
 remove_sysctl_rules() {
   rm -f /etc/sysctl.d/99-wireguard-forward.conf /etc/sysctl.d/99-wireguard-optimize.conf
-  # [F12] 网络优化的用户选择标记一并清理（卸载后重装回到默认开启）
-  rm -f "$NET_OPT_MARKER"
   # 若系统未安装其他VPN（OpenVPN/IPsec），关闭IP转发
   if [ ! -f /usr/sbin/openvpn ] && [ ! -f /usr/sbin/ipsec ] &&
     [ ! -f /usr/local/sbin/ipsec ]; then
@@ -2059,10 +1952,9 @@ wgsetup() {
     show_header
     # [F9] 老版本安装的系统同样补上 wg 名称显示增强（幂等，重复执行无副作用）
     install_wg_show_names
-    # [F10] 主菜单循环：每个操作完成后返回菜单，仅选择「5) 退出」
+    # [F10] 主菜单循环：每个操作完成后返回菜单，仅选择「4) 退出」
     # （或确认卸载完成）才真正结束脚本。取消类路径（空输入/选N）也回到菜单。
     # [F11] 主菜单已由 6 项精简为 4 项，「管理已有客户端」下另有一层循环。
-    # [F12] 主菜单增至 5 项：新增「3) 网络优化」开关（默认开启）。
     while true; do
       # 显示操作菜单并获取用户选择
       select_menu_option
@@ -2086,12 +1978,7 @@ wgsetup() {
         manage_clients
         ;;
       3)
-        # 选项3：网络优化开关（[F12]，取消 = 直接返回菜单）
-        net_opt_menu
-        press_enter_to_menu
-        ;;
-      4)
-        # 选项4：卸载WireGuard（原为选项3；选N = 中止并返回菜单；确认卸载完成后脚本结束，
+        # 选项3：卸载WireGuard（原为选项5；选N = 中止并返回菜单；确认卸载完成后脚本结束，
         # 因为WireGuard已不存在，菜单无意义）
         confirm_remove_wg
         if [[ "$remove" =~ ^[yY]$ ]]; then
@@ -2110,8 +1997,8 @@ wgsetup() {
           press_enter_to_menu
         fi
         ;;
-      5)
-        # 选项5：退出脚本（原为选项4）
+      4)
+        # 选项4：退出脚本（原为选项6）
         exit 0
         ;;
       esac
