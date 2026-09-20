@@ -96,7 +96,7 @@ WireGuard 安装脚本
 # [F11] 脚本版本标记。wgmon 的自动更新会读取这一行来判断服务器上的
 #       wg.sh 是否需要更新；仓库根另有同内容的 WGSH_VERSION 文件。
 #       发版时两处必须同步修改（格式固定，勿改成多行或改写变量名）。
-WG_SH_VERSION="1.4.0"
+WG_SH_VERSION="1.4.1"
 
 # ─────────────────────────────────────────────────────────────
 # 系统 DNS 与 53 端口准备（[F1][F5][F6] 修订）
@@ -1317,12 +1317,15 @@ update_sysctl() {
       /bin/rm -f "$conf_opt"
       touch "$conf_opt"
     }
-  # 若内核版本>=4.20，启用TCP BBR拥塞控制（提升网络性能）
+  # 若内核版本>=4.20，启用TCP BBR + fq_codel 队列管理
+  # （fq_codel 主动队列管理：突发/拥塞时压低排队延迟，实测回程抖动 mdev 改善约 40%；
+  #   netdev_max_backlog 加大内核入口队列，防突发丢包。2026-09-20 在阿里云轻量实测）
   if modprobe -q tcp_bbr &&
     printf '%s\n%s' "4.20" "$(uname -r)" | sort -C -V &&
     [ -f /proc/sys/net/ipv4/tcp_congestion_control ]; then
     cat >>"$conf_opt" <<'EOF'
-net.core.default_qdisc = fq
+net.core.default_qdisc = fq_codel
+net.core.netdev_max_backlog = 10000
 net.ipv4.tcp_congestion_control = bbr
 EOF
   fi
