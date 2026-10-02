@@ -9,7 +9,7 @@ WireGuard 组网服务器一键安装 / 管理脚本（阿里云 Ubuntu 实测�
 | 原作者（二改汉化） | 包崽同学 |
 | 优化维护 | **Ma6302**（[github.com/Ma6302](https://github.com/Ma6302)） |
 
-上游血统：脚本基于 [Nyr 的 openvpn-install](https://github.com/Nyr/openvpn-install) 系 WireGuard 分支（版权行见脚本运行横幅），由包崽同学二改汉化，Ma6302 在其上做了 11 项修复与体验优化（F1~F11，详见 [CHANGELOG.md](CHANGELOG.md)）。
+上游血统：脚本基于 [Nyr 的 openvpn-install](https://github.com/Nyr/openvpn-install) 系 WireGuard 分支（版权行见脚本运行横幅），由包崽同学二改汉化，Ma6302 在其上做了 13 项修复与体验优化（F1~F13，详见 [CHANGELOG.md](CHANGELOG.md)）。
 
 ## 一键部署（新服务器）
 
@@ -45,14 +45,14 @@ curl -fsSL -o /root/deploy.sh https://cdn.jsdelivr.net/gh/Ma6302/wireguard-setup
 
 | 文件 | 说明 |
 |---|---|
-| `wg.sh` | 主脚本：WireGuard 服务端一键安装 + 管理菜单（添加客户端 / **管理已有客户端**（列出·删除·QR 码）/ **网络优化开关** / 卸载，`wg show` 显示 peer 名称） |
+| `wg.sh` | 主脚本：WireGuard 服务端一键安装 + 管理菜单（添加客户端 / **管理已有客户端**（删除·QR 码）/ **网络优化开关** / 卸载，`wg show` 显示 peer 名称） |
 | `WGSH_VERSION` | **wg.sh 版本声明**（仓库根）。`wgmon` 的自更新用它和服务器上 `/root/wg.sh` 内的 `WG_SH_VERSION` 标记比对 |
 | `harden-ssh.sh` | SSH 加固（root 仅密钥登录、关闭密码登录；幂等、可回滚，`--check` 只读查看） |
 | `wg-forward-guard.sh` + `.service` | WireGuard 出方向防护：抑制客户端异常扫描/P2P 行为，防止云平台误判「对外攻击」触发全端口阻断 |
 | `wg-traffic-monitor/` | **流量监控 + 微信日报**（wgmon）：增量记账统计各设备/当日/当月流量，阈值告警，定时日报，支持 **wgmon 与 wg.sh 双组件** GitHub 自动更新 |
 | `deploy.sh` | **一键部署引导**（新服务器）：下载 wg.sh + wgmon → 校验 → 放置 → 按需拉起 WireGuard 安装 → 装监控与定时任务。支持 `--dry-run` / `--sendkey=` / `--no-wg` / `--ref=` |
 | `publish-via-api.py` | **维护者发布工具**：本机 git 通道不通时，用 GitHub Git Data API 逐层重建提交（哈希与本地一致、历史不分叉）。见下方「发布」 |
-| `CHANGELOG.md` | 完整迭代日志（A→C9 共 12 个版本，每项修复的原理、部署与验证记录） |
+| `CHANGELOG.md` | 完整迭代日志（A→C11 共 14 个版本，每项修复的原理、部署与验证记录） |
 | `docs/versions/` | 全部历史版本快照（文件名内嵌行数与 md5 前 8 位） |
 
 ## 使用
@@ -114,6 +114,9 @@ cd wg-traffic-monitor && bash install.sh
   内核入口缓冲，实测回程抖动 mdev 改善约 40%（突发/拥塞时偶发延迟尖峰明显减少）；切换即时生效、
   不影响在线隧道；关闭的选择持久化（重装/升级沿用），卸载后重装回到默认开启
   （v1.4.3 起：从旧版升级上来的服务器首次运行新版会**自动补开**，用户明确关闭过的则不动）
+- **F13**：去掉客户端管理二级菜单里的冗余项（v1.4.4 起）——菜单一进入就已经打印「已有客户端（共 N 个）」清单，
+  其下的「1) 列出所有已存在的客户端」只是重复打印同一份清单，已删除；二级菜单由 4 项减为 3 项
+  （删除 / 显示 QR 码 / 返回上一级），`--listclients` 等命令行参数不受影响
 
 ## 免责声明
 
