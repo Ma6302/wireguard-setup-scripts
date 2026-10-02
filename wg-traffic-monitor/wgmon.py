@@ -9,8 +9,8 @@ wgmon —— WireGuard 流量监控 + 微信日报（零成本方案）
   3. 每日固定时间推送流量日报到微信（Server酱·「方糖」服务号，免费）
   4. 自动更新：每天日报时比对 GitHub，**wgmon 与 wg.sh 两个组件各自检查**，
      谁有新版本就更新谁，并通知"更新了哪个"（可在菜单/配置开关）
-  5. 交互菜单（v1.4.1 起二级化，与 wg.sh 同级风格）：
-     主菜单 = 查看用量 / 推送日报 / 测试消息 / **参数设置**（阈值·日报时间·快照间隔）/
+  5. 交互菜单（v1.4.1 起二级化，与 wg.sh 同级风格；v1.4.5 起去掉「测试消息」项）：
+     主菜单 = 查看用量 / 推送日报 / **参数设置**（阈值·日报时间·快照间隔）/
      SendKey / 重装定时任务 / **更新管理**（手动更新·检查更新·自动更新开关）/ 卸载 / 退出
 
 子命令：
@@ -52,7 +52,7 @@ DB_PATH = os.path.join(BASE_DIR, "wgmon.db")
 CRON_TAG = "wgmon.py"  # crontab 幂等标记
 
 # 版本号（与仓库 wg-traffic-monitor/VERSION 比较，决定是否自动更新）
-VERSION = "1.4.1"
+VERSION = "1.4.5"
 
 # 更新源：从项目 Release 标签（整仓快照）取，标签内 wg-traffic-monitor/VERSION 为准；
 # 识别 vX.Y.Z（推荐）与兼容 wgmon-vX.Y.Z 两种标签名；找不到标签时回退 main 分支
@@ -1140,18 +1140,18 @@ def menu_update(cfg):
 
 
 def cmd_menu(cfg):
-    """主菜单。v1.4.1 起二级化：原 4/5/6 收进「参数设置」，10/11/12 收进「更新管理」"""
+    """主菜单。v1.4.1 起二级化：原 4/5/6 收进「参数设置」，10/11/12 收进「更新管理」；
+    v1.4.5 起删除原「3) 发送测试消息」（测试消息改由 `wgmon.py selftest` 覆盖）"""
     while True:
         print()
         print("======== wgmon 流量监控 ========")
         print("1) 查看当日/本月用量")
         print("2) 立即推送日报到微信")
-        print("3) 发送测试消息")
-        print("4) 参数设置（阈值 / 日报时间 / 快照间隔）")
-        print("5) 修改 Server酱 SendKey")
-        print("6) 重装定时任务")
-        print("7) 更新管理（手动更新 / 检查更新 / 自动更新开关）")
-        print("8) 卸载 wgmon（移除定时任务/快捷命令，可选删数据）")
+        print("3) 参数设置（阈值 / 日报时间 / 快照间隔）")
+        print("4) 修改 Server酱 SendKey")
+        print("5) 重装定时任务")
+        print("6) 更新管理（手动更新 / 检查更新 / 自动更新开关）")
+        print("7) 卸载 wgmon（移除定时任务/快捷命令，可选删数据）")
         print("0) 退出")
         choice = _rev("请选择: ")
         if choice is None:
@@ -1164,23 +1164,20 @@ def cmd_menu(cfg):
         elif choice == "2":
             daily(cfg)
         elif choice == "3":
-            ok, msg = notify(cfg, "✅ wgmon 测试消息", "这是一条手动测试消息。")
-            print("发送: %s%s" % ("成功" if ok else "失败", "" if ok else " -> " + msg))
-        elif choice == "4":
             # 二级菜单：返回后直接重印主菜单，不再多按一次回车
             menu_settings(cfg)
             continue
-        elif choice == "5":
+        elif choice == "4":
             set_sendkey(cfg)
-        elif choice == "6":
+        elif choice == "5":
             try:
                 install_cron(cfg)
             except Exception as e:
                 print("失败: %s" % e)
-        elif choice == "7":
+        elif choice == "6":
             menu_update(cfg)
             continue
-        elif choice == "8":
+        elif choice == "7":
             if uninstall(cfg):
                 print("wgmon 已完全卸载。")
                 break
